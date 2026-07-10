@@ -1,6 +1,6 @@
 """
-Grabador de Reuniones de Teams — Sistema + Micrófono y Transcripción
-====================================================================
+Max Recorder — Reuniones de Teams (Sistema + Micrófono) con Transcripción
+=========================================================================
 
 Graba simultáneamente:
   - El audio de salida de Windows (lo que suena por los altavoces/lo que dicen los
@@ -95,7 +95,9 @@ MIC_CONSENT_KEY = (
 
 # Clave de arranque automático al iniciar sesión (por usuario, sin admin)
 AUTOSTART_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-AUTOSTART_VALUE_NAME = "GrabadorTeams"
+AUTOSTART_VALUE_NAME = "MaxRecorder"
+# Nombre antiguo (versiones previas); se limpia al desactivar el inicio automático.
+AUTOSTART_LEGACY_NAMES = ("GrabadorTeams",)
 
 
 # --------------------------------------------------------------------------
@@ -143,7 +145,11 @@ def disable_autostart():
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY, 0,
                             winreg.KEY_SET_VALUE) as key:
-            winreg.DeleteValue(key, AUTOSTART_VALUE_NAME)
+            for name in (AUTOSTART_VALUE_NAME,) + AUTOSTART_LEGACY_NAMES:
+                try:
+                    winreg.DeleteValue(key, name)
+                except FileNotFoundError:
+                    pass
     except FileNotFoundError:
         pass
 
@@ -542,8 +548,8 @@ class MeetingWatcher(threading.Thread):
     def _meeting_window_open(self, teams_pids):
         """True si alguna ventana visible PERTENECIENTE A TEAMS tiene un título
         con palabra clave de reunión. Se restringe a ventanas de Teams para no
-        dar falsos positivos con otras ventanas (p.ej. la propia app, que se
-        llama 'Grabador de Reuniones Teams', un Word titulado 'meeting', etc.)."""
+        dar falsos positivos con otras ventanas (p.ej. la propia app 'Max
+        Recorder', un Word titulado 'meeting', etc.)."""
         if not WIN32_AVAILABLE or not teams_pids:
             return False
         found = {"value": False}
@@ -656,7 +662,7 @@ class MeetingPopup(tk.Toplevel):
 class App(tk.Tk):
     def __init__(self, start_in_tray=False):
         super().__init__()
-        self.title("Grabador de Reuniones Teams — Transcripción")
+        self.title("Max Recorder — Transcripción de reuniones de Teams")
         self.geometry("860x620")
 
         self.recorder = None
@@ -665,6 +671,7 @@ class App(tk.Tk):
         self.transcript_text = ""
         self.meeting_watcher = None
         self.tray_icon = None
+        self._quit_after_save = False
 
         self.output_dir = tk.StringVar(value=OUTPUT_DIR_DEFAULT)
         self.auto_detect_var = tk.BooleanVar(value=False)
@@ -908,12 +915,20 @@ class App(tk.Tk):
         self.lbl_status.config(text=f"Grabación guardada: {mixed_path}")
         if errors:
             messagebox.showwarning("Avisos durante la grabación", "\n".join(errors))
+        if self._quit_after_save:
+            self._quit_after_save = False
+            self._quit_app()
 
     def _on_stop_error(self, error):
         self.btn_start.config(state="normal")
         self.btn_stop.config(state="disabled")
         self.lbl_status.config(text="Error al procesar la grabación.")
         messagebox.showerror("Error al detener la grabación", str(error))
+        if self._quit_after_save:
+            # Falló el guardado; preguntamos si aun así quiere cerrar.
+            self._quit_after_save = False
+            if messagebox.askyesno("Cerrar", "No se pudo guardar la grabación.\n¿Cerrar de todos modos?"):
+                self._quit_app()
 
     # ---------------- Detección de reuniones ----------------
 
@@ -980,7 +995,7 @@ class App(tk.Tk):
             pystray.MenuItem("Detener grabación", lambda: self.after(0, self._stop_recording)),
             pystray.MenuItem("Salir", self._tray_quit),
         )
-        self.tray_icon = pystray.Icon("grabador_teams", image, "Grabador de Reuniones Teams", menu)
+        self.tray_icon = pystray.Icon("max_recorder", image, "Max Recorder", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def _make_tray_image(self):
@@ -1012,6 +1027,33 @@ class App(tk.Tk):
         self._quit_app()
 
     def _quit_app(self):
+        # Aviso si hay una grabación en curso: evita perderla al cerrar.
+        if self.recording:
+            resp = messagebox.askyesnocancel(
+                "Grabación en curso",
+                "Hay una grabación en curso.\n\n"
+                "• Sí: detenerla y guardarla antes de salir.\n"
+                "• No: descartarla y salir (se pierde).\n"
+                "• Cancelar: no cerrar.",
+                icon="warning")
+            if resp is None:
+                return  # Cancelar: no cerramos
+            if resp:
+                # Guardar y salir: detenemos (guarda en segundo plano) y cerramos
+                # cuando termine, desde _on_stop_done / _on_stop_error.
+                self._quit_after_save = True
+                self.lbl_status.config(text="Guardando antes de salir...")
+                self._stop_recording()
+                return
+            # No: descartar la grabación en curso sin guardar.
+            self.recording = False
+            if self.recorder:
+                try:
+                    self.recorder.close()
+                except Exception:
+                    pass
+                self.recorder = None
+
         if self.meeting_watcher:
             self.meeting_watcher.stop()
         if self.tray_icon:
@@ -1083,7 +1125,7 @@ if __name__ == "__main__":
     except Exception:
         faulthandler.enable()
 
-    parser = argparse.ArgumentParser(description="Grabador de Reuniones de Teams")
+    parser = argparse.ArgumentParser(description="Max Recorder — Grabador de reuniones de Teams")
     parser.add_argument(
         "--tray", action="store_true",
         help="Arrancar minimizado en la bandeja con la detección de reuniones activada "
