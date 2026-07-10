@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\hugo.gomez-sanchez\\\\Desktop\\\\Recorder\\\\grabador.py\"; if \\($?\\) { \"OK compila\" })",
+      "Bash(python -m py_compile grabador.py)",
+      "PowerShell(& \"C:\\\\Users\\\\hugo.gomez-sanchez\\\\Desktop\\\\Recorder\\\\venv\\\\Scripts\\\\python.exe\" --version; & \"C:\\\\Users\\\\hugo.gomez-sanchez\\\\Desktop\\\\Recorder\\\\venv\\\\Scripts\\\\python.exe\" -c \"import platform; print\\(platform.architecture\\(\\)[0]\\)\")",
+      "Bash(C:\\\\Users\\\\hugo.gomez-sanchez\\\\Desktop\\\\Recorder\\\\venv\\\\Scripts\\\\python.exe *)",
+      "Bash(\"venv/Scripts/python.exe\" -m pip list)",
+      "Bash(\"venv/Scripts/python.exe\" -m pip install psutil pywin32)",
+      "Bash(\"venv/Scripts/python.exe\" diag_teams.py)",
+      "Bash(venv/Scripts/python.exe -c ' *)"
+    ]
+  }
+}
