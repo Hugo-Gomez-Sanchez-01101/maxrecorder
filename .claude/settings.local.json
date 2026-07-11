@@ -8,7 +8,18 @@
       "Bash(\"venv/Scripts/python.exe\" -m pip list)",
       "Bash(\"venv/Scripts/python.exe\" -m pip install psutil pywin32)",
       "Bash(\"venv/Scripts/python.exe\" diag_teams.py)",
-      "Bash(venv/Scripts/python.exe -c ' *)"
+      "Bash(venv/Scripts/python.exe -c ' *)",
+      "Bash(git -C /c/Users/hugo.gomez-sanchez/Desktop/Recorder log --oneline -5)",
+      "Bash(git -C /c/Users/hugo.gomez-sanchez/Desktop/Recorder ls-files)",
+      "PowerShell(.\\\\venv\\\\Scripts\\\\python.exe -m py_compile grabador.py; if \\($?\\) { \"OK compile\" })",
+      "PowerShell(.\\\\venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\HUGO~1.GOM\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-hugo-gomez-sanchez-Desktop-Recorder\\\\8fd91cc2-b963-4e8f-8a8a-4e9c6ba982cc\\\\scratchpad\\\\smoke_ui.py\")",
+      "PowerShell(.\\\\venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\HUGO~1.GOM\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-hugo-gomez-sanchez-Desktop-Recorder\\\\8fd91cc2-b963-4e8f-8a8a-4e9c6ba982cc\\\\scratchpad\\\\shot_ui.py\")",
+      "Bash(./venv/Scripts/python.exe -m py_compile grabador.py)",
+      "Bash(cat)",
+      "Bash(./venv/Scripts/python.exe /tmp/smoke2.py)",
+      "Bash(ls -la /settings.png /smoke3.py /shot_settings.py)",
+      "Bash(cygpath -w /settings.png)",
+      "Bash(./venv/Scripts/python.exe -c ' *)"
     ]
   }
 }

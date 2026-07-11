@@ -6,11 +6,35 @@ Herramienta de escritorio para **Windows** que:
    reunión de Teams, vía **WASAPI loopback**) y tu **micrófono**, y los mezcla en un único
    WAV con **alineación temporal correcta**. También guarda cada pista por separado.
 2. Transcribe el audio con **faster-whisper** (modelo local, gratis, sin subir nada a
-   ningún servidor).
-3. Puede quedarse en **segundo plano (bandeja del sistema)** y avisarte con un popup
-   cuando detecta que estás en una reunión de Teams, para grabar con un clic.
-4. Puede **arrancar automáticamente al iniciar sesión** (minimizada a la bandeja), para
-   no depender de abrirla a mano.
+   ningún servidor):
+   - **Modo "Tú / Ellos"**: transcribe las pistas `_mic` y `_sistema` por separado y
+     entrelaza los segmentos por tiempo, etiquetando quién habla (sin necesidad de
+     pyannote ni token de HuggingFace).
+   - **Marcas de tiempo** por segmento y **streaming**: el texto va apareciendo según
+     se transcribe, con barra de progreso.
+   - **Filtro VAD**: salta los silencios (más rápido y evita alucinaciones del modelo
+     en tramos sin voz).
+   - **Caché del modelo**: se carga una sola vez y se reutiliza en transcripciones
+     siguientes.
+   - **Autoguardado**: el `.txt` se guarda solo en la **carpeta de transcripciones**
+     (configurable en Ajustes) como `reunion_AAAA-MM-DD.txt` — o `weekly_AAAA-MM-DD.txt`
+     si la reunión de Teams se llama "[Weekly] Hacking Team"; si ya existe uno ese día
+     se añade `_2`, `_3`... Opcionalmente se **transcribe automáticamente al detener**
+     la grabación (casilla "Auto al detener").
+   - Botón **"Archivo..."** para transcribir cualquier audio suelto (wav/mp3/m4a/...).
+3. La **detección de reuniones está siempre activa**: cuando detecta que estás en una
+   reunión de Teams te avisa con un popup para grabar con un clic. Con el botón
+   **"Segundo plano"** (arriba a la derecha) la app se esconde en la bandeja del sistema
+   y sigue vigilando.
+4. Puede **arrancar automáticamente al iniciar sesión** (en segundo plano), para no
+   depender de abrirla a mano.
+5. Ventana de **Ajustes** (botón "⚙ Ajustes"): carpeta de transcripciones, palabras
+   clave de respaldo, intervalo de sondeo, arranque con Windows y probar el aviso. Los
+   ajustes persisten entre sesiones en `config.json` (junto al script, ignorado por git).
+
+Por defecto, las grabaciones se guardan en `%USER%\Documents\MaxRecorder\Records` y las
+transcripciones en `%USER%\Documents\MaxRecorder\Transcripts`; ambas carpetas se pueden
+cambiar (la de grabaciones en la ventana principal, la de transcripciones en Ajustes).
 
 > El **resumen** de las transcripciones no lo hace esta app: se genera aparte mediante una
 > tarea programada de Claude sobre los `.txt` guardados.
@@ -71,20 +95,27 @@ Python global sin las librerías instaladas.
    segundo plano (no congela la ventana).
 3. Se guardan 3 WAV en la carpeta configurada: la **mezcla** y las dos pistas por separado
    (`_sistema.wav` = los demás, `_mic.wav` = tú), ya alineadas.
-4. **Transcribir última grabación** (elige el tamaño del modelo Whisper).
-5. **Guardar .txt** de la transcripción (tu tarea de Claude se encarga del resumen).
+4. Si la casilla **"Auto al detener"** está marcada, la transcripción arranca sola al
+   guardar; si no, pulsa **Transcribir última** (elige el tamaño del modelo Whisper).
+   Con **"Tú / Ellos"** marcado se transcriben las dos pistas por separado y el texto
+   sale etiquetado por hablante y con marcas de tiempo.
+5. El `.txt` se guarda automáticamente en la carpeta de transcripciones con el nombre
+   `reunion_AAAA-MM-DD.txt` (o `weekly_AAAA-MM-DD.txt`, ver arriba); **Guardar .txt**
+   permite además exportarlo donde quieras (tu tarea de Claude se encarga del resumen).
 
-### Modo automático (detección de reuniones)
-1. Marca **"Detectar reuniones automáticamente y avisar"**.
-2. La app vigila en segundo plano si Teams está usando el micrófono (en llamada).
-3. Cuando lo detecta, aparece un aviso en la esquina inferior derecha con botones
+### Detección de reuniones (siempre activa)
+1. La app vigila desde que se abre si Teams está usando el micrófono (en llamada);
+   no hay que activar nada.
+2. Cuando lo detecta, aparece un aviso en la esquina inferior derecha con botones
    **Grabar** / **Ignorar**.
-4. Icono en la bandeja con menú: Abrir / Iniciar grabación / Detener grabación / Salir.
-   Usa **"Minimizar a bandeja"** para dejarla corriendo sin estorbar.
+3. El botón **"Segundo plano"** (arriba a la derecha) esconde la ventana en la bandeja
+   del sistema; el icono tiene menú: Abrir / Iniciar grabación / Detener grabación /
+   Salir.
+4. Las palabras clave de respaldo y el intervalo de sondeo se cambian en **Ajustes**.
 
 ### Arrancar automáticamente al iniciar sesión
-Marca la casilla **"Arrancar automáticamente al iniciar sesión (minimizado a la
-bandeja)"**. Escribe una entrada en `HKCU\...\Run` (por usuario, **sin admin**) que lanza
+Marca la casilla **"Arrancar automáticamente al iniciar sesión de Windows"** en
+**Ajustes**. Escribe una entrada en `HKCU\...\Run` (por usuario, **sin admin**) que lanza
 la app con `--tray` (oculta en la bandeja y con la detección ya activada). Para
 desactivarlo, desmarca la casilla.
 
@@ -92,15 +123,18 @@ desactivarlo, desmarca la casilla.
 > registro apunte al `pythonw.exe` del venv (con todas las dependencias) y no al Python
 > global.
 
-## Diarización de hablantes (en preparación)
+## Separación de hablantes ("Tú / Ellos")
 
-Objetivo: transcripción con etiquetas de hablante ("Tú" / "Hablante 1/2/3"), estilo Notion,
-diarizando `_sistema.wav` (los demás) con **pyannote.audio** y etiquetando `_mic.wav` como
-"Tú". Requiere `torch` + `pyannote.audio` (ya instalables desde `requirements.txt`) y un
-**token gratuito de HuggingFace** con los términos aceptados de los modelos
-`pyannote/segmentation-3.0`, `pyannote/speaker-diarization-3.1` y
-`pyannote/speaker-diarization-community-1`. El token se lee de la variable de entorno
-`HF_TOKEN`. La integración del botón en la app está pendiente.
+Ya integrada, sin dependencias extra: como la app graba tu micrófono y el audio del
+sistema en **pistas separadas y alineadas**, basta transcribir cada pista por su lado y
+entrelazar los segmentos por su marca de tiempo. Tu voz sale como **"Tú"** y el resto de
+participantes como **"Ellos"**. Es la casilla "Tú / Ellos" de la sección de transcripción
+(activada por defecto; solo aplica a grabaciones hechas con la app, que tienen las dos
+pistas).
+
+Para distinguir entre varios participantes remotos ("Hablante 1/2/3") haría falta
+diarización real de `_sistema.wav` con **pyannote.audio** (torch + token de HuggingFace);
+queda como posible mejora futura.
 
 ## Notas técnicas
 
@@ -120,6 +154,7 @@ Recorder/
 ├── grabador.py       # aplicación principal (GUI)
 ├── Grabador.bat      # lanzador (usa el Python del venv)
 ├── diag_teams.py     # utilidad de diagnóstico de detección
+├── config.json       # ajustes persistentes (se crea solo; ignorado por git)
 ├── requirements.txt
 └── README.md
 ```

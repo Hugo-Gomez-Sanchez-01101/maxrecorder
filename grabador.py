@@ -11,24 +11,37 @@ offset de arranque entre hilos y el drift de reloj entre dispositivos) y transcr
 con faster-whisper (local, gratis). El resumen de las transcripciones se genera
 aparte mediante una tarea programada de Claude, no desde esta app.
 
+Transcripción mejorada:
+  - El modelo Whisper se carga una sola vez y se reutiliza (caché en memoria).
+  - Filtro VAD (detección de voz) para saltar silencios: más rápido y menos
+    alucinaciones en tramos sin habla.
+  - Resultado en streaming: los segmentos van apareciendo según se transcriben,
+    con marcas de tiempo y barra de progreso.
+  - Modo "Tú / Ellos": transcribe las pistas _mic y _sistema por separado y
+    entrelaza los segmentos por tiempo, etiquetando quién habla.
+  - Autoguardado del .txt junto a la grabación y transcripción automática
+    opcional al detener.
+
 Además puede quedarse en segundo plano (bandeja del sistema) y detectar cuándo
 arranca una reunión de Teams para mostrar un aviso y ofrecer grabar con un clic.
-Puede arrancar automáticamente al iniciar sesión (minimizada a la bandeja) para
-no tener que lanzarla a mano; ver los botones de "inicio automático" o el
-argumento --tray.
+Puede arrancar automáticamente al iniciar sesión (minimizada a la bandeja); ver
+la casilla de "inicio automático" o el argumento --tray.
 
 Solo funciona en Windows (usa PyAudioWPatch / WASAPI loopback).
 """
 
 import os
 import sys
+import json
+import math
 import time
 import wave
+import random
 import argparse
 import threading
 import faulthandler
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 
 import numpy as np
@@ -80,10 +93,12 @@ except ImportError:
 CHUNK = 1024
 FORMAT_WIDTH = 2  # int16
 TARGET_RATE = 44100
-OUTPUT_DIR_DEFAULT = os.path.join(os.path.expanduser("~"), "Documents", "GrabacionesRecMax")
+_DOCS_MAX_RECORDER = os.path.join(os.path.expanduser("~"), "Documents", "MaxRecorder")
+OUTPUT_DIR_DEFAULT = os.path.join(_DOCS_MAX_RECORDER, "Records")
+TRANSCRIPT_DIR_DEFAULT = os.path.join(_DOCS_MAX_RECORDER, "Transcripts")
 
 TEAMS_PROCESS_NAMES = {"teams.exe", "ms-teams.exe"}
-DEFAULT_MEETING_KEYWORDS = ["reunión", "reunion", "meeting", "llamada", "call"]
+DEFAULT_MEETING_KEYWORDS = ["reunión", "reunion", "meeting", "llamada", "call", "[Weekly] Hacking Team"]
 
 # Detección de "en reunión" por uso del micrófono (fiable, sin depender del
 # título de ventana). Windows registra aquí, por app, cuándo empezó/terminó de
@@ -98,6 +113,269 @@ AUTOSTART_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_VALUE_NAME = "MaxRecorder"
 # Nombre antiguo (versiones previas); se limpia al desactivar el inicio automático.
 AUTOSTART_LEGACY_NAMES = ("GrabadorTeams",)
+
+# Nombre del .txt de transcripción: por defecto reunion_AAAA-MM-DD.txt. Si el
+# título de alguna ventana de Teams al empezar a grabar contiene una de estas
+# subcadenas, se usa su prefijo en su lugar (p.ej. weekly_AAAA-MM-DD.txt).
+DEFAULT_TRANSCRIPT_PREFIX = "reunion"
+MEETING_NAME_RULES = [
+    ("[weekly] hacking team", "weekly"),
+]
+
+# Ajustes persistentes (carpetas, palabras clave, sondeo) junto al script.
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+
+def load_config() -> dict:
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            cfg = json.load(f)
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_config(cfg: dict):
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+# --------------------------------------------------------------------------
+# Paleta y utilidades visuales (tema oscuro "tech")
+# --------------------------------------------------------------------------
+
+class P:
+    BG = "#0a0e13"          # fondo general
+    PANEL = "#0f151d"       # paneles / secciones
+    PANEL2 = "#121a24"      # paneles elevados
+    FIELD = "#0b1017"       # campos de texto
+    BORDER = "#1f2d3b"      # bordes finos
+    GRID = "#14202c"        # rejilla del visualizador
+    TEXT = "#d6e3ee"        # texto principal
+    DIM = "#5d7183"         # texto secundario
+    ACCENT = "#00e5ff"      # cian neón (identidad)
+    ACCENT_DK = "#073a44"   # cian apagado (fondos de botón)
+    GREEN = "#2be8a6"       # ok / listo
+    RED = "#ff3860"         # grabando / peligro
+    RED_DK = "#4a1220"
+    AMBER = "#ffb454"       # procesando / aviso
+
+    FONT = ("Segoe UI", 9)
+    FONT_SM = ("Segoe UI", 8)
+    FONT_BOLD = ("Segoe UI", 9, "bold")
+    MONO = ("Consolas", 10)
+    MONO_BIG = ("Consolas", 22, "bold")
+    TITLE = ("Consolas", 15, "bold")
+
+
+def blend(c1: str, c2: str, t: float) -> str:
+    """Interpola dos colores hex '#rrggbb' (t=0 → c1, t=1 → c2)."""
+    t = min(max(t, 0.0), 1.0)
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(int(x + (y - x) * t) for x, y in zip(a, b))
+
+
+class TechButton(tk.Button):
+    """Botón plano estilo consola con efecto hover. kind: 'primary' (cian),
+    'danger' (rojo), 'ghost' (transparente con borde)."""
+
+    KINDS = {
+        "primary": (P.ACCENT_DK, P.ACCENT, "#0a5666"),
+        "danger": (P.RED_DK, "#ff8ba3", "#6b1a2e"),
+        "ghost": (P.PANEL2, P.TEXT, "#1a2634"),
+    }
+
+    def __init__(self, master, kind="ghost", **kw):
+        bg, fg, hover = self.KINDS.get(kind, self.KINDS["ghost"])
+        self._bg, self._hover = bg, hover
+        super().__init__(
+            master, relief="flat", bd=0, cursor="hand2",
+            bg=bg, fg=fg, activebackground=hover, activeforeground=fg,
+            disabledforeground="#3c4b5a", font=P.FONT_BOLD,
+            padx=14, pady=5, highlightthickness=1,
+            highlightbackground=P.BORDER, highlightcolor=P.BORDER, **kw)
+        self.bind("<Enter>", lambda e: self._set_bg(self._hover))
+        self.bind("<Leave>", lambda e: self._set_bg(self._bg))
+
+    def _set_bg(self, color):
+        if self["state"] != "disabled":
+            self.config(bg=color)
+
+
+class StatusLED(tk.Canvas):
+    """LED circular con pulso animado. Estados: idle (gris), ready (verde),
+    watching (cian), recording (rojo), busy (ámbar)."""
+
+    COLORS = {
+        "idle": ("#3a4a5a", False),
+        "ready": (P.GREEN, False),
+        "watching": (P.ACCENT, True),
+        "recording": (P.RED, True),
+        "busy": (P.AMBER, True),
+    }
+
+    def __init__(self, master, size=14, **kw):
+        super().__init__(master, width=size, height=size, bg=kw.pop("bg", P.PANEL),
+                         highlightthickness=0, **kw)
+        self.size = size
+        self._state = "idle"
+        self._phase = 0.0
+        m = 2
+        self._dot = self.create_oval(m, m, size - m, size - m, fill="#3a4a5a", outline="")
+        self._animate()
+
+    def set_state(self, state):
+        self._state = state if state in self.COLORS else "idle"
+
+    def _animate(self):
+        color, pulse = self.COLORS[self._state]
+        if pulse:
+            self._phase += 0.18
+            t = (math.sin(self._phase) + 1) / 2  # 0..1
+            color = blend(blend(color, P.BG, 0.65), color, t)
+        self.itemconfig(self._dot, fill=color)
+        self.after(60, self._animate)
+
+
+class AudioVisualizer(tk.Canvas):
+    """Osciloscopio de barras desplazándose de derecha a izquierda. Mientras se
+    graba, la altura de las barras viene de los niveles RMS reales (sistema y
+    micrófono); en reposo dibuja una onda de escaneo tenue."""
+
+    def __init__(self, master, height=88, **kw):
+        super().__init__(master, height=height, bg=P.PANEL,
+                         highlightthickness=1, highlightbackground=P.BORDER, **kw)
+        self.h = height
+        self.recording = False
+        self.level_source = None  # callable -> (sys_level, mic_level) en 0..1
+        self._history = []        # (nivel_sys, nivel_mic) por columna
+        self._phase = 0.0
+        self._bar_w = 3
+        self._gap = 2
+        self._animate()
+
+    def _columns(self):
+        w = max(self.winfo_width(), 100)
+        return max(w // (self._bar_w + self._gap), 10), w
+
+    def _animate(self):
+        ncols, w = self._columns()
+        self._phase += 0.12
+
+        if self.recording and self.level_source:
+            s, m = self.level_source()
+            # escala perceptual + un poco de vida (jitter)
+            s = min(math.sqrt(max(s, 0.0)) * 1.6, 1.0) * (0.85 + 0.3 * random.random())
+            m = min(math.sqrt(max(m, 0.0)) * 1.6, 1.0) * (0.85 + 0.3 * random.random())
+            self._history.append((min(s, 1.0), min(m, 1.0)))
+        else:
+            # onda idle: respiración suave con doble seno
+            t = self._phase
+            v = 0.06 + 0.045 * (math.sin(t) * math.sin(t * 0.37) + 1) / 2
+            self._history.append((v, v * 0.7))
+        self._history = self._history[-ncols:]
+
+        self.delete("all")
+        cy = self.h // 2
+        # rejilla
+        self.create_line(0, cy, w, cy, fill=P.GRID)
+        for gx in range(0, w, 60):
+            self.create_line(gx, 0, gx, self.h, fill=P.GRID)
+
+        x = w - len(self._history) * (self._bar_w + self._gap)
+        max_h = self.h // 2 - 6
+        for s, m in self._history:
+            if self.recording:
+                # sistema (cian→magenta según intensidad) hacia arriba,
+                # micrófono (verde) hacia abajo
+                hs = max(int(s * max_h), 1)
+                hm = max(int(m * max_h), 1)
+                cs = blend(P.ACCENT, P.RED, s * s)
+                cm = blend(P.GREEN, P.AMBER, m * m)
+                self.create_rectangle(x, cy - hs, x + self._bar_w, cy, fill=cs, outline="")
+                self.create_rectangle(x, cy, x + self._bar_w, cy + hm, fill=cm, outline="")
+            else:
+                hv = max(int(s * max_h), 1)
+                c = blend(P.GRID, P.ACCENT, 0.45)
+                self.create_rectangle(x, cy - hv, x + self._bar_w, cy + hv, fill=c, outline="")
+            x += self._bar_w + self._gap
+
+        if self.recording:
+            # leyenda mínima
+            self.create_text(8, 10, text="SYS", anchor="w", fill=P.ACCENT, font=("Consolas", 8))
+            self.create_text(8, self.h - 10, text="MIC", anchor="w", fill=P.GREEN, font=("Consolas", 8))
+
+        self.after(45, self._animate)
+
+
+class TechProgress(tk.Canvas):
+    """Barra de progreso: determinada (fracción 0..1) o indeterminada (banda
+    de escaneo animada). set(None) la deja indeterminada; set(-1) la oculta."""
+
+    def __init__(self, master, height=6, **kw):
+        super().__init__(master, height=height, bg=P.FIELD,
+                         highlightthickness=1, highlightbackground=P.BORDER, **kw)
+        self.h = height
+        self._value = -1.0
+        self._scan = 0.0
+        self._animate()
+
+    def set(self, value):
+        # None → indeterminada (-2); [0..1] → determinada. hide() la oculta (-1).
+        self._value = -2.0 if value is None else float(value)
+
+    def hide(self):
+        self._value = -1.0
+
+    def _animate(self):
+        self.delete("all")
+        w = max(self.winfo_width(), 10)
+        if self._value >= 0:
+            fill_w = int(w * min(self._value, 1.0))
+            self.create_rectangle(0, 0, fill_w, self.h, fill=P.ACCENT, outline="")
+        elif self._value <= -2.0:
+            self._scan += 0.03
+            band = w // 4
+            x = int((self._scan % 1.0) * (w + band)) - band
+            self.create_rectangle(x, 0, x + band, self.h, fill=P.ACCENT, outline="")
+        self.after(40, self._animate)
+
+
+def make_section(parent, title):
+    """Crea una sección estilo panel con cabecera '▸ TÍTULO' y devuelve el
+    frame interior donde colocar los widgets."""
+    outer = tk.Frame(parent, bg=P.PANEL, highlightthickness=1,
+                     highlightbackground=P.BORDER)
+    outer.pack(fill="x", padx=10, pady=(8, 0))
+    header = tk.Frame(outer, bg=P.PANEL)
+    header.pack(fill="x")
+    tk.Label(header, text="▸ " + title.upper(), bg=P.PANEL, fg=P.ACCENT,
+             font=("Consolas", 9, "bold"), anchor="w").pack(side="left", padx=10, pady=(6, 2))
+    inner = tk.Frame(outer, bg=P.PANEL)
+    inner.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+    return outer, inner
+
+
+def dark_entry(parent, **kw):
+    return tk.Entry(parent, bg=P.FIELD, fg=P.TEXT, insertbackground=P.ACCENT,
+                    relief="flat", highlightthickness=1,
+                    highlightbackground=P.BORDER, highlightcolor=P.ACCENT,
+                    font=P.FONT, **kw)
+
+
+def dark_check(parent, **kw):
+    return tk.Checkbutton(parent, bg=P.PANEL, fg=P.TEXT, activebackground=P.PANEL,
+                          activeforeground=P.TEXT, selectcolor=P.FIELD,
+                          font=P.FONT, anchor="w", **kw)
+
+
+def dark_label(parent, dim=False, **kw):
+    kw.setdefault("font", P.FONT_SM if dim else P.FONT)
+    return tk.Label(parent, bg=kw.pop("bg", P.PANEL), fg=P.DIM if dim else P.TEXT, **kw)
 
 
 # --------------------------------------------------------------------------
@@ -260,6 +538,27 @@ def save_wav_mono(path: str, samples_int16: np.ndarray, sample_rate: int):
         wf.writeframes(samples_int16.tobytes())
 
 
+def transcript_txt_path(directory: str, prefix: str) -> str:
+    """Ruta del .txt de transcripción: <prefijo>_AAAA-MM-DD.txt en 'directory'.
+    Si ya existe uno de ese día (otra reunión), añade _2, _3... para no pisarlo."""
+    date = datetime.now().strftime("%Y-%m-%d")
+    path = os.path.join(directory, f"{prefix}_{date}.txt")
+    n = 2
+    while os.path.exists(path):
+        path = os.path.join(directory, f"{prefix}_{date}_{n}.txt")
+        n += 1
+    return path
+
+
+def format_ts(seconds: float) -> str:
+    seconds = max(int(seconds), 0)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
 # --------------------------------------------------------------------------
 # Grabador dual (sistema + micrófono) con timestamps de reloj de pared
 # --------------------------------------------------------------------------
@@ -267,7 +566,8 @@ def save_wav_mono(path: str, samples_int16: np.ndarray, sample_rate: int):
 class DualRecorder:
     """Graba en paralelo el loopback del sistema y el micrófono elegido,
     registrando timestamps reales de inicio/fin de cada pista para poder
-    alinearlas correctamente al mezclar."""
+    alinearlas correctamente al mezclar. Expone además el nivel RMS
+    instantáneo de cada pista (para el visualizador de la UI)."""
 
     def __init__(self, mic_device_index=None):
         if pyaudio is None:
@@ -289,6 +589,8 @@ class DualRecorder:
         self._mic_timing = {}
         self._sys_error = {}
         self._mic_error = {}
+        self._sys_level = {"v": 0.0}
+        self._mic_level = {"v": 0.0}
         self._sys_stream = None
         self._mic_stream = None
         self._closed = False
@@ -332,11 +634,13 @@ class DualRecorder:
         # colgados y provocaba un crash nativo al cerrar. Con callback,
         # PortAudio nos entrega los datos y el cierre es limpio y seguro.
         self._sys_stream = self._open_stream(
-            self.loopback_info, self._sys_frames, self._sys_timing, self._sys_error)
+            self.loopback_info, self._sys_frames, self._sys_timing,
+            self._sys_error, self._sys_level)
         self._mic_stream = self._open_stream(
-            self.mic_info, self._mic_frames, self._mic_timing, self._mic_error)
+            self.mic_info, self._mic_frames, self._mic_timing,
+            self._mic_error, self._mic_level)
 
-    def _open_stream(self, device_info, frame_list, timing, error_holder):
+    def _open_stream(self, device_info, frame_list, timing, error_holder, level_holder):
         channels = min(int(device_info["maxInputChannels"]), 2) or 1
         rate = int(device_info["defaultSampleRate"])
         timing["channels"] = channels
@@ -344,6 +648,11 @@ class DualRecorder:
 
         def callback(in_data, frame_count, time_info, status):
             frame_list.append(in_data)
+            # Nivel RMS normalizado (0..1) con suavizado, para el visualizador.
+            arr = np.frombuffer(in_data, dtype=np.int16)
+            if arr.size:
+                rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2))) / 32768.0
+                level_holder["v"] = level_holder["v"] * 0.6 + rms * 0.4
             return (None, pyaudio.paContinue)
 
         try:
@@ -366,6 +675,10 @@ class DualRecorder:
         if not self._recording or self._wall_start is None:
             return 0
         return time.time() - self._wall_start
+
+    def get_levels(self):
+        """(nivel_sistema, nivel_micrófono) en 0..1, suavizados."""
+        return self._sys_level["v"], self._mic_level["v"]
 
     def get_errors(self):
         errs = []
@@ -458,8 +771,148 @@ class DualRecorder:
 
 
 # --------------------------------------------------------------------------
+# Motor de transcripción (faster-whisper) con caché de modelo y streaming
+# --------------------------------------------------------------------------
+
+class Transcriber:
+    """Envuelve faster-whisper con:
+      - caché del modelo (cargarlo es lo más lento; se reutiliza entre usos),
+      - filtro VAD para saltar silencios,
+      - callbacks de progreso y de segmento (para streaming en la UI),
+      - modo multi-pista con etiquetas de hablante (Tú / Ellos)."""
+
+    def __init__(self):
+        self._models = {}
+        self._lock = threading.Lock()
+
+    def get_model(self, model_size: str):
+        with self._lock:
+            if model_size not in self._models:
+                self._models[model_size] = WhisperModel(
+                    model_size, device="cpu", compute_type="int8")
+            return self._models[model_size]
+
+    def transcribe_jobs(self, jobs, model_size, language=None,
+                        on_segment=None, on_progress=None, on_phase=None):
+        """jobs: lista de (etiqueta|None, ruta). Devuelve lista de segmentos
+        (start, label, text) ordenada por tiempo. Los callbacks llegan desde
+        este mismo hilo (el llamante decide cómo saltar al hilo de la UI)."""
+        if on_phase:
+            on_phase(f"Cargando modelo '{model_size}'...")
+        model = self.get_model(model_size)
+
+        kwargs = dict(
+            language=language,
+            beam_size=5,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+            condition_on_previous_text=True,
+        )
+        if language == "es":
+            kwargs["initial_prompt"] = (
+                "Transcripción de una reunión de trabajo en español.")
+
+        all_segs = []
+        n = len(jobs)
+        for idx, (label, path) in enumerate(jobs):
+            if on_phase:
+                name = os.path.basename(path)
+                on_phase(f"Transcribiendo {name}" + (f" [{label}]" if label else "") + "...")
+            segments, info = model.transcribe(path, **kwargs)
+            duration = max(getattr(info, "duration", 0.0) or 0.0, 0.001)
+            for seg in segments:
+                text = seg.text.strip()
+                # Descarta segmentos que el propio modelo considera no-habla
+                # (típica fuente de alucinaciones en silencios).
+                if not text or getattr(seg, "no_speech_prob", 0.0) > 0.85:
+                    continue
+                all_segs.append((seg.start, label, text))
+                if on_segment:
+                    on_segment(seg.start, label, text)
+                if on_progress:
+                    frac = (idx + min(seg.end / duration, 1.0)) / n
+                    on_progress(frac)
+            if on_progress:
+                on_progress((idx + 1) / n)
+
+        all_segs.sort(key=lambda s: s[0])
+        return all_segs
+
+    @staticmethod
+    def format_segments(segs, with_timestamps=True):
+        lines = []
+        for start, label, text in segs:
+            prefix = ""
+            if with_timestamps:
+                prefix += f"[{format_ts(start)}] "
+            if label:
+                prefix += f"{label}: "
+            lines.append(prefix + text)
+        return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
 # Detector de reuniones de Teams (heurístico, en segundo plano)
 # --------------------------------------------------------------------------
+
+def teams_pids():
+    """PIDs de los procesos de Teams en ejecución (vacío si no hay)."""
+    pids = set()
+    if not PSUTIL_AVAILABLE:
+        return pids
+    for proc in psutil.process_iter(["name", "pid"]):
+        try:
+            name = (proc.info.get("name") or "").lower()
+            if name in TEAMS_PROCESS_NAMES or "teams" in name:
+                pids.add(proc.info["pid"])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return pids
+
+
+def teams_window_titles(pids):
+    """Títulos de las ventanas visibles pertenecientes a los procesos dados."""
+    titles = []
+    if not WIN32_AVAILABLE or not pids:
+        return titles
+
+    def enum_handler(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd):
+            return
+        try:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        except Exception:
+            return
+        if pid not in pids:
+            return
+        title = win32gui.GetWindowText(hwnd)
+        if title:
+            titles.append(title)
+
+    try:
+        win32gui.EnumWindows(enum_handler, None)
+    except Exception:
+        pass
+    return titles
+
+
+def detect_meeting_prefix() -> str:
+    """Prefijo para el nombre del .txt según el título de la reunión de Teams
+    en curso (ver MEETING_NAME_RULES). Si no se puede determinar o no hay
+    regla que aplique, devuelve el prefijo por defecto ('reunion')."""
+    if not (WIN32_AVAILABLE and PSUTIL_AVAILABLE):
+        return DEFAULT_TRANSCRIPT_PREFIX
+    try:
+        titles = teams_window_titles(teams_pids())
+    except Exception:
+        return DEFAULT_TRANSCRIPT_PREFIX
+    for title in titles:
+        title_l = title.lower()
+        for substring, prefix in MEETING_NAME_RULES:
+            if substring in title_l:
+                return prefix
+    return DEFAULT_TRANSCRIPT_PREFIX
+
 
 class MeetingWatcher(threading.Thread):
     """Sondea periódicamente si Teams está en una reunión/llamada.
@@ -490,20 +943,6 @@ class MeetingWatcher(threading.Thread):
 
     def update_keywords(self, keywords):
         self.keywords = [k.strip().lower() for k in keywords if k.strip()]
-
-    def _teams_pids(self):
-        """PIDs de los procesos de Teams en ejecución (vacío si no hay)."""
-        pids = set()
-        if not PSUTIL_AVAILABLE:
-            return pids
-        for proc in psutil.process_iter(["name", "pid"]):
-            try:
-                name = (proc.info.get("name") or "").lower()
-                if name in TEAMS_PROCESS_NAMES or "teams" in name:
-                    pids.add(proc.info["pid"])
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        return pids
 
     @staticmethod
     def _consent_teams_active(subpath):
@@ -545,36 +984,16 @@ class MeetingWatcher(threading.Thread):
         except Exception:
             return None
 
-    def _meeting_window_open(self, teams_pids):
+    def _meeting_window_open(self, pids):
         """True si alguna ventana visible PERTENECIENTE A TEAMS tiene un título
         con palabra clave de reunión. Se restringe a ventanas de Teams para no
         dar falsos positivos con otras ventanas (p.ej. la propia app 'Max
         Recorder', un Word titulado 'meeting', etc.)."""
-        if not WIN32_AVAILABLE or not teams_pids:
-            return False
-        found = {"value": False}
-
-        def enum_handler(hwnd, _):
-            if found["value"] or not win32gui.IsWindowVisible(hwnd):
-                return
-            try:
-                _, pid = win32process.GetWindowThreadProcessId(hwnd)
-            except Exception:
-                return
-            if pid not in teams_pids:
-                return
-            title = win32gui.GetWindowText(hwnd)
-            if not title:
-                return
+        for title in teams_window_titles(pids):
             title_l = title.lower()
             if any(k in title_l for k in self.keywords):
-                found["value"] = True
-
-        try:
-            win32gui.EnumWindows(enum_handler, None)
-        except Exception:
-            return False
-        return found["value"]
+                return True
+        return False
 
     def run(self):
         while not self._stop_event.is_set():
@@ -582,12 +1001,12 @@ class MeetingWatcher(threading.Thread):
                 mic = self._teams_using_mic()
                 if mic is None:
                     # Sin registro: respaldo por título de ventana de Teams.
-                    teams_pids = self._teams_pids()
-                    meeting_now = bool(teams_pids) and self._meeting_window_open(teams_pids)
+                    pids = teams_pids()
+                    meeting_now = bool(pids) and self._meeting_window_open(pids)
                 else:
                     # Señal fiable por micrófono. Confirmamos que Teams sigue vivo
                     # (evita una entrada obsoleta si Teams murió reteniendo el micro).
-                    meeting_now = bool(mic) and bool(self._teams_pids())
+                    meeting_now = bool(mic) and bool(teams_pids())
             except Exception:
                 meeting_now = False
 
@@ -603,7 +1022,7 @@ class MeetingWatcher(threading.Thread):
 
 
 # --------------------------------------------------------------------------
-# Popup de aviso estilo notificación
+# Popup de aviso estilo notificación (con animación de entrada)
 # --------------------------------------------------------------------------
 
 class MeetingPopup(tk.Toplevel):
@@ -615,26 +1034,49 @@ class MeetingPopup(tk.Toplevel):
 
         self.overrideredirect(True)
         self.attributes("-topmost", True)
-        w, h = 340, 140
+        self.w, self.h = 350, 148
         sx, sy = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.geometry(f"{w}x{h}+{sx - w - 24}+{sy - h - 70}")
-        self.configure(bg="#202124", highlightthickness=1, highlightbackground="#444")
+        self._final_x = sx - self.w - 24
+        self._y = sy - self.h - 70
+        # arranca fuera de pantalla (derecha) y entra deslizándose
+        self._x = float(sx)
+        self.geometry(f"{self.w}x{self.h}+{int(self._x)}+{self._y}")
+        self.configure(bg=P.PANEL, highlightthickness=1, highlightbackground=P.ACCENT)
 
-        tk.Label(self, text="🎥 Reunión de Teams detectada",
-                 bg="#202124", fg="white", font=("Segoe UI", 11, "bold"),
-                 anchor="w", justify="left").pack(fill="x", padx=14, pady=(14, 2))
+        head = tk.Frame(self, bg=P.PANEL)
+        head.pack(fill="x", padx=14, pady=(12, 2))
+        self._led = StatusLED(head, bg=P.PANEL)
+        self._led.set_state("recording")
+        self._led.pack(side="left", padx=(0, 8))
+        tk.Label(head, text="REUNIÓN DE TEAMS DETECTADA",
+                 bg=P.PANEL, fg=P.TEXT, font=("Consolas", 10, "bold"),
+                 anchor="w").pack(side="left")
+
         tk.Label(self, text="¿Quieres iniciar la grabación ahora?",
-                 bg="#202124", fg="#cccccc", anchor="w", justify="left").pack(
-            fill="x", padx=14, pady=(0, 10))
+                 bg=P.PANEL, fg=P.DIM, font=P.FONT, anchor="w",
+                 justify="left").pack(fill="x", padx=14, pady=(2, 10))
 
-        btns = tk.Frame(self, bg="#202124")
+        btns = tk.Frame(self, bg=P.PANEL)
         btns.pack(padx=14, pady=4, fill="x")
-        tk.Button(btns, text="● Grabar", bg="#2ecc71", fg="white", relief="flat",
-                  command=self._accept, width=10).pack(side="left", padx=(0, 8))
-        tk.Button(btns, text="Ignorar", bg="#3a3a3a", fg="white", relief="flat",
-                  command=self._dismiss, width=10).pack(side="left")
+        TechButton(btns, kind="danger", text="●  GRABAR",
+                   command=self._accept, width=11).pack(side="left", padx=(0, 8))
+        TechButton(btns, kind="ghost", text="IGNORAR",
+                   command=self._dismiss, width=11).pack(side="left")
 
+        self._slide_in()
         self.after(timeout * 1000, self._auto_dismiss)
+
+    def _slide_in(self):
+        if self._closed:
+            return
+        dist = self._x - self._final_x
+        if dist <= 1:
+            self._x = self._final_x
+        else:
+            self._x -= max(dist * 0.25, 2)
+        self.geometry(f"{self.w}x{self.h}+{int(self._x)}+{self._y}")
+        if self._x > self._final_x:
+            self.after(15, self._slide_in)
 
     def _accept(self):
         self._close()
@@ -656,6 +1098,96 @@ class MeetingPopup(tk.Toplevel):
 
 
 # --------------------------------------------------------------------------
+# Ventana de ajustes
+# --------------------------------------------------------------------------
+
+class SettingsWindow(tk.Toplevel):
+    """Ajustes de la app: carpeta por defecto de transcripciones y opciones de
+    segundo plano (detección de reuniones, palabras clave, sondeo, arranque al
+    iniciar Windows, probar el aviso). Se guardan en config.json al cerrar."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.title("Ajustes — Max Recorder")
+        self.configure(bg=P.BG)
+        self.resizable(False, False)
+        self.transient(app)
+        self.geometry(f"+{app.winfo_rootx() + 90}+{app.winfo_rooty() + 70}")
+        self.protocol("WM_DELETE_WINDOW", self._save_close)
+
+        tk.Label(self, text="⚙ AJUSTES", bg=P.BG, fg=P.ACCENT,
+                 font=("Consolas", 12, "bold"), anchor="w").pack(
+            fill="x", padx=12, pady=(10, 0))
+
+        # ---- Transcripciones ----
+        _, tr = make_section(self, "Transcripciones")
+        row = tk.Frame(tr, bg=P.PANEL)
+        row.pack(fill="x", pady=2)
+        dark_label(row, text="Carpeta por defecto:").pack(side="left", padx=(2, 4))
+        dark_entry(row, textvariable=app.transcript_dir, width=45).pack(
+            side="left", padx=4, fill="x", expand=True, ipady=3)
+        TechButton(row, text="ELEGIR...", command=self._choose_dir).pack(side="left", padx=4)
+
+        # ---- Segundo plano ----
+        _, bg_sec = make_section(self, "Segundo plano · Detección de reuniones")
+        row1 = tk.Frame(bg_sec, bg=P.PANEL)
+        row1.pack(fill="x", pady=2)
+        dark_check(row1, text="Detectar reuniones automáticamente y avisar (siempre activa)",
+                   variable=app.auto_detect_var, state="disabled",
+                   disabledforeground=P.TEXT).pack(side="left")
+        dark_label(row1, text="Sondeo (s):").pack(side="left", padx=(16, 4))
+        tk.Spinbox(row1, from_=2, to=30, width=4, textvariable=app.poll_interval_var,
+                   bg=P.FIELD, fg=P.TEXT, buttonbackground=P.PANEL2,
+                   insertbackground=P.ACCENT, relief="flat",
+                   highlightthickness=1, highlightbackground=P.BORDER).pack(side="left")
+
+        row2 = tk.Frame(bg_sec, bg=P.PANEL)
+        row2.pack(fill="x", pady=2)
+        dark_label(row2, text="Palabras clave (respaldo por título):").pack(side="left", padx=(2, 4))
+        dark_entry(row2, textvariable=app.keywords_var).pack(
+            side="left", padx=4, fill="x", expand=True, ipady=3)
+
+        row3 = tk.Frame(bg_sec, bg=P.PANEL)
+        row3.pack(fill="x", pady=2)
+        dark_check(row3,
+                   text="Arrancar automáticamente al iniciar sesión de Windows (en segundo plano)",
+                   variable=app.autostart_var, command=app._toggle_autostart).pack(side="left")
+        if not WINREG_AVAILABLE:
+            lbl_no_reg = dark_label(row3, text="(no disponible en esta plataforma)")
+            lbl_no_reg.config(fg=P.RED)
+            lbl_no_reg.pack(side="left", padx=6)
+
+        row4 = tk.Frame(bg_sec, bg=P.PANEL)
+        row4.pack(fill="x", pady=(4, 2))
+        TechButton(row4, text="PROBAR AVISO", command=app._test_popup).pack(side="left", padx=2)
+
+        if not (PSUTIL_AVAILABLE and WIN32_AVAILABLE):
+            tk.Label(bg_sec, text="⚠ Faltan dependencias para la detección: pip install psutil pywin32",
+                     bg=P.PANEL, fg=P.AMBER, font=P.FONT_SM, anchor="w").pack(fill="x")
+        if not TRAY_AVAILABLE:
+            tk.Label(bg_sec, text="⚠ Para el segundo plano instala: pip install pystray pillow",
+                     bg=P.PANEL, fg=P.AMBER, font=P.FONT_SM, anchor="w").pack(fill="x")
+
+        # ---- Cierre ----
+        btns = tk.Frame(self, bg=P.BG)
+        btns.pack(fill="x", padx=12, pady=10)
+        TechButton(btns, kind="primary", text="GUARDAR Y CERRAR",
+                   command=self._save_close).pack(side="right")
+
+    def _choose_dir(self):
+        d = filedialog.askdirectory(
+            initialdir=self.app.transcript_dir.get() or self.app.output_dir.get(),
+            parent=self)
+        if d:
+            self.app.transcript_dir.set(d)
+
+    def _save_close(self):
+        self.app._apply_settings()
+        self.destroy()
+
+
+# --------------------------------------------------------------------------
 # GUI principal
 # --------------------------------------------------------------------------
 
@@ -663,22 +1195,42 @@ class App(tk.Tk):
     def __init__(self, start_in_tray=False):
         super().__init__()
         self.title("Max Recorder — Transcripción de reuniones de Teams")
-        self.geometry("860x620")
+        self.geometry("920x640")
+        self.minsize(760, 520)
+        self.configure(bg=P.BG)
 
         self.recorder = None
         self.recording = False
-        self.last_mixed_path = None
+        self.transcribing = False
+        self.last_paths = None       # dict(mixed=, sys=, mic=) de la última grabación
         self.transcript_text = ""
         self.meeting_watcher = None
         self.tray_icon = None
         self._quit_after_save = False
+        self._rec_blink = False
+        self.transcriber = Transcriber()
 
-        self.output_dir = tk.StringVar(value=OUTPUT_DIR_DEFAULT)
-        self.auto_detect_var = tk.BooleanVar(value=False)
-        self.keywords_var = tk.StringVar(value=", ".join(DEFAULT_MEETING_KEYWORDS))
-        self.poll_interval_var = tk.IntVar(value=4)
+        cfg = load_config()
+        self.output_dir = tk.StringVar(value=cfg.get("output_dir", OUTPUT_DIR_DEFAULT))
+        self.transcript_dir = tk.StringVar(value=cfg.get("transcript_dir", TRANSCRIPT_DIR_DEFAULT))
+        # La detección de reuniones va siempre activa: se arranca sola al
+        # abrir la app (haya o no modo bandeja) y la casilla se deshabilita
+        # para que no se pueda dejar desactivada por error.
+        self.auto_detect_var = tk.BooleanVar(value=True)
+        self.keywords_var = tk.StringVar(
+            value=cfg.get("keywords", ", ".join(DEFAULT_MEETING_KEYWORDS)))
+        try:
+            poll = int(cfg.get("poll_interval", 4))
+        except (TypeError, ValueError):
+            poll = 4
+        self.poll_interval_var = tk.IntVar(value=min(max(poll, 2), 30))
         self.autostart_var = tk.BooleanVar(value=is_autostart_enabled())
+        self.settings_window = None
+        self.speakers_var = tk.BooleanVar(value=True)     # modo Tú/Ellos
+        self.timestamps_var = tk.BooleanVar(value=True)   # marcas de tiempo
+        self.auto_transcribe_var = tk.BooleanVar(value=True)
 
+        self._setup_style()
         self._build_ui()
         self._refresh_mic_list()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -686,121 +1238,172 @@ class App(tk.Tk):
         if TRAY_AVAILABLE:
             self._setup_tray()
 
+        # La detección arranca siempre, independientemente del modo bandeja.
+        self.after(0, self._toggle_auto_detect)
+
         # Arranque en modo bandeja (inicio automático al iniciar sesión):
-        # ocultar la ventana y activar la detección de reuniones.
+        # ocultar la ventana.
         if start_in_tray:
             self.after(0, self._start_in_tray)
 
     def _start_in_tray(self):
-        if PSUTIL_AVAILABLE and WIN32_AVAILABLE:
-            self.auto_detect_var.set(True)
-            self._toggle_auto_detect()
         if TRAY_AVAILABLE:
             self.withdraw()
+
+    # ---------------- Estilo ----------------
+
+    def _setup_style(self):
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+        style.configure("TCombobox",
+                        fieldbackground=P.FIELD, background=P.PANEL2,
+                        foreground=P.TEXT, arrowcolor=P.ACCENT,
+                        bordercolor=P.BORDER, lightcolor=P.PANEL,
+                        darkcolor=P.PANEL, selectbackground=P.ACCENT_DK,
+                        selectforeground=P.TEXT)
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", P.FIELD)],
+                  foreground=[("readonly", P.TEXT)])
+        # desplegable del combobox
+        self.option_add("*TCombobox*Listbox.background", P.FIELD)
+        self.option_add("*TCombobox*Listbox.foreground", P.TEXT)
+        self.option_add("*TCombobox*Listbox.selectBackground", P.ACCENT_DK)
+        self.option_add("*TCombobox*Listbox.selectForeground", P.TEXT)
+        style.configure("Vertical.TScrollbar",
+                        background=P.PANEL2, troughcolor=P.FIELD,
+                        bordercolor=P.BORDER, arrowcolor=P.DIM)
 
     # ---------------- Construcción de la UI ----------------
 
     def _build_ui(self):
-        pad = {"padx": 8, "pady": 6}
+        # ---- Cabecera ----
+        header = tk.Frame(self, bg=P.BG)
+        header.pack(fill="x", padx=10, pady=(10, 0))
+        tk.Label(header, text="◉ MAX RECORDER", bg=P.BG, fg=P.ACCENT,
+                 font=P.TITLE, anchor="w").pack(side="left")
+        # Botones de la esquina superior derecha: pasar a segundo plano
+        # (antes "Bandeja") y abrir la ventana de ajustes.
+        TechButton(header, text="▾ SEGUNDO PLANO",
+                   command=self._minimize_to_tray).pack(side="right")
+        TechButton(header, text="⚙ AJUSTES",
+                   command=self._open_settings).pack(side="right", padx=6)
+        led_box = tk.Frame(header, bg=P.BG)
+        led_box.pack(side="right", padx=(0, 8))
+        self.led = StatusLED(led_box, bg=P.BG)
+        self.led.set_state("ready")
+        self.led.pack(side="left", padx=(0, 6))
+        self.lbl_status = tk.Label(led_box, text="LISTO", bg=P.BG, fg=P.DIM,
+                                   font=("Consolas", 9))
+        self.lbl_status.pack(side="left")
 
-        frame_out = ttk.LabelFrame(self, text="Carpeta de salida")
-        frame_out.pack(fill="x", **pad)
-        ttk.Entry(frame_out, textvariable=self.output_dir, width=70).pack(
-            side="left", padx=6, pady=6, fill="x", expand=True)
-        ttk.Button(frame_out, text="Elegir...", command=self._choose_output_dir).pack(
-            side="left", padx=6, pady=6)
+        # ---- Visualizador ----
+        self.visualizer = AudioVisualizer(self)
+        self.visualizer.pack(fill="x", padx=10, pady=(8, 0))
+        self.visualizer.level_source = self._get_levels
 
-        frame_dev = ttk.LabelFrame(self, text="Dispositivo de entrada (micrófono)")
-        frame_dev.pack(fill="x", **pad)
-        self.mic_combo = ttk.Combobox(frame_dev, state="readonly", width=60)
-        self.mic_combo.pack(side="left", padx=6, pady=6, fill="x", expand=True)
-        ttk.Button(frame_dev, text="Refrescar", command=self._refresh_mic_list).pack(
-            side="left", padx=6, pady=6)
-        ttk.Label(frame_dev, text="(el audio del sistema se detecta solo vía WASAPI loopback)").pack(
+        # ---- Grabación ----
+        _, rec = make_section(self, "Grabación")
+        row = tk.Frame(rec, bg=P.PANEL)
+        row.pack(fill="x", pady=2)
+        self.btn_start = TechButton(row, kind="primary", text="●  INICIAR",
+                                    command=self._start_recording, width=13)
+        self.btn_start.pack(side="left", padx=(2, 6))
+        self.btn_stop = TechButton(row, kind="danger", text="■  DETENER",
+                                   command=self._stop_recording, width=13,
+                                   state="disabled")
+        self.btn_stop.pack(side="left", padx=6)
+        self.lbl_rec = tk.Label(row, text="", bg=P.PANEL, fg=P.RED,
+                                font=("Consolas", 10, "bold"), width=6)
+        self.lbl_rec.pack(side="left", padx=(14, 0))
+        self.lbl_timer = tk.Label(row, text="00:00:00", bg=P.PANEL, fg=P.TEXT,
+                                  font=P.MONO_BIG)
+        self.lbl_timer.pack(side="left", padx=6)
+
+        row2 = tk.Frame(rec, bg=P.PANEL)
+        row2.pack(fill="x", pady=(6, 2))
+        dark_label(row2, text="Micrófono:").pack(side="left", padx=(2, 4))
+        self.mic_combo = ttk.Combobox(row2, state="readonly", width=44)
+        self.mic_combo.pack(side="left", padx=4, fill="x", expand=True)
+        TechButton(row2, text="⟳", command=self._refresh_mic_list, width=3).pack(side="left", padx=4)
+        dark_label(row2, dim=True,
+                   text="(el audio del sistema se captura solo, vía WASAPI loopback)").pack(
             side="left", padx=6)
 
-        frame_rec = ttk.LabelFrame(self, text="Grabación")
-        frame_rec.pack(fill="x", **pad)
-        self.btn_start = ttk.Button(frame_rec, text="● Iniciar grabación", command=self._start_recording)
-        self.btn_start.pack(side="left", padx=6, pady=8)
-        self.btn_stop = ttk.Button(frame_rec, text="■ Detener", command=self._stop_recording, state="disabled")
-        self.btn_stop.pack(side="left", padx=6, pady=8)
-        self.lbl_timer = ttk.Label(frame_rec, text="00:00:00", font=("Consolas", 14))
-        self.lbl_timer.pack(side="left", padx=20)
-        self.lbl_status = ttk.Label(frame_rec, text="Listo.")
-        self.lbl_status.pack(side="left", padx=10)
+        row3 = tk.Frame(rec, bg=P.PANEL)
+        row3.pack(fill="x", pady=(4, 2))
+        dark_label(row3, text="Carpeta de salida:").pack(side="left", padx=(2, 4))
+        dark_entry(row3, textvariable=self.output_dir).pack(
+            side="left", padx=4, fill="x", expand=True, ipady=3)
+        TechButton(row3, text="ELEGIR...", command=self._choose_output_dir).pack(
+            side="left", padx=4)
 
-        # --- Modo en segundo plano / detección automática ---
-        frame_bg = ttk.LabelFrame(self, text="Modo en segundo plano (detección de reuniones de Teams)")
-        frame_bg.pack(fill="x", **pad)
-        row1 = ttk.Frame(frame_bg)
-        row1.pack(fill="x", padx=4, pady=2)
-        ttk.Checkbutton(row1, text="Detectar reuniones automáticamente y avisar",
-                         variable=self.auto_detect_var, command=self._toggle_auto_detect).pack(side="left")
-        ttk.Label(row1, text="Sondeo (seg):").pack(side="left", padx=(20, 4))
-        ttk.Spinbox(row1, from_=2, to=30, width=4, textvariable=self.poll_interval_var).pack(side="left")
-        ttk.Button(row1, text="Minimizar a bandeja", command=self._minimize_to_tray).pack(side="right", padx=4)
-        ttk.Button(row1, text="Probar aviso", command=self._test_popup).pack(side="right", padx=4)
+        # (Los ajustes de segundo plano — detección, palabras clave, arranque
+        # con Windows, probar aviso — viven ahora en la ventana de Ajustes.)
 
-        row2 = ttk.Frame(frame_bg)
-        row2.pack(fill="x", padx=4, pady=(2, 6))
-        ttk.Label(row2, text="Palabras clave (solo respaldo por título si no hay registro):").pack(side="left")
-        ttk.Entry(row2, textvariable=self.keywords_var, width=45).pack(
-            side="left", padx=6, fill="x", expand=True)
+        # ---- Transcripción ----
+        outer_tr, tr = make_section(self, "Transcripción · faster-whisper (local)")
+        outer_tr.pack_configure(fill="both", expand=True, pady=(8, 10))
 
-        row3 = ttk.Frame(frame_bg)
-        row3.pack(fill="x", padx=4, pady=(2, 6))
-        ttk.Checkbutton(
-            row3, text="Arrancar automáticamente al iniciar sesión (minimizado a la bandeja)",
-            variable=self.autostart_var, command=self._toggle_autostart).pack(side="left")
-        if not WINREG_AVAILABLE:
-            ttk.Label(row3, text="(no disponible en esta plataforma)", foreground="#b33").pack(side="left", padx=6)
-
-        note = ("Detección principal: se considera 'en reunión' cuando Teams está usando el micrófono "
-                "(lo toma al entrar en una llamada y lo suelta al salir). Es fiable y no depende del "
-                "título de la ventana. Las palabras clave de arriba solo se usan como respaldo si no "
-                "hubiera acceso al registro de Windows.")
-        ttk.Label(frame_bg, text=note, wraplength=800, foreground="#666").pack(
-            fill="x", padx=6, pady=(0, 6))
-
-        if not (PSUTIL_AVAILABLE and WIN32_AVAILABLE):
-            ttk.Label(frame_bg,
-                      text="⚠ Faltan dependencias para la detección automática: pip install psutil pywin32",
-                      foreground="#b33").pack(fill="x", padx=6)
-        if not TRAY_AVAILABLE:
-            ttk.Label(frame_bg,
-                      text="⚠ Para minimizar a la bandeja del sistema instala: pip install pystray pillow",
-                      foreground="#b33").pack(fill="x", padx=6)
-
-        # --- Transcripción ---
-        frame_tr = ttk.LabelFrame(self, text="Transcripción (faster-whisper, local)")
-        frame_tr.pack(fill="both", expand=True, **pad)
-
-        tr_controls = ttk.Frame(frame_tr)
-        tr_controls.pack(fill="x")
-        ttk.Label(tr_controls, text="Modelo:").pack(side="left", padx=4)
+        ctr = tk.Frame(tr, bg=P.PANEL)
+        ctr.pack(fill="x", pady=2)
+        dark_label(ctr, text="Modelo:").pack(side="left", padx=(2, 4))
         self.whisper_model_combo = ttk.Combobox(
-            tr_controls, state="readonly", width=12,
+            ctr, state="readonly", width=10,
             values=["tiny", "base", "small", "medium", "large-v3"])
         self.whisper_model_combo.set("small")
         self.whisper_model_combo.pack(side="left", padx=4)
-        ttk.Label(tr_controls, text="Idioma (vacío = auto):").pack(side="left", padx=4)
-        self.lang_entry = ttk.Entry(tr_controls, width=6)
+        dark_label(ctr, text="Idioma:").pack(side="left", padx=(10, 4))
+        self.lang_entry = dark_entry(ctr, width=5)
         self.lang_entry.insert(0, "es")
-        self.lang_entry.pack(side="left", padx=4)
-        self.btn_transcribe = ttk.Button(
-            tr_controls, text="Transcribir última grabación",
+        self.lang_entry.pack(side="left", padx=4, ipady=3)
+        dark_check(ctr, text="Tú / Ellos", variable=self.speakers_var).pack(side="left", padx=(12, 0))
+        dark_check(ctr, text="Marcas de tiempo", variable=self.timestamps_var).pack(side="left", padx=(8, 0))
+        dark_check(ctr, text="Auto al detener", variable=self.auto_transcribe_var).pack(side="left", padx=(8, 0))
+
+        ctr2 = tk.Frame(tr, bg=P.PANEL)
+        ctr2.pack(fill="x", pady=(4, 2))
+        self.btn_transcribe = TechButton(
+            ctr2, kind="primary", text="▶  TRANSCRIBIR ÚLTIMA",
             command=self._transcribe, state="disabled")
-        self.btn_transcribe.pack(side="left", padx=10)
-        ttk.Button(tr_controls, text="Guardar .txt", command=self._save_transcript).pack(side="left", padx=4)
+        self.btn_transcribe.pack(side="left", padx=2)
+        TechButton(ctr2, text="ARCHIVO...", command=self._transcribe_file).pack(side="left", padx=6)
+        TechButton(ctr2, text="GUARDAR .TXT", command=self._save_transcript).pack(side="left", padx=6)
+        self.lbl_tr_status = dark_label(ctr2, dim=True, text="")
+        self.lbl_tr_status.pack(side="left", padx=10)
 
-        self.txt_transcript = scrolledtext.ScrolledText(frame_tr, height=14, wrap="word")
-        self.txt_transcript.pack(fill="both", expand=True, padx=4, pady=4)
+        self.progress = TechProgress(tr)
+        self.progress.pack(fill="x", pady=(6, 4))
 
-        note_resumen = ("El resumen de las transcripciones se genera aparte mediante tu tarea "
-                        "programada de Claude sobre los .txt guardados; esta app ya no lo hace.")
-        ttk.Label(frame_tr, text=note_resumen, wraplength=800, foreground="#666").pack(
-            fill="x", padx=6, pady=(0, 4))
+        txt_frame = tk.Frame(tr, bg=P.PANEL)
+        txt_frame.pack(fill="both", expand=True)
+        self.txt_transcript = tk.Text(
+            txt_frame, height=10, wrap="word", bg=P.FIELD, fg=P.TEXT,
+            insertbackground=P.ACCENT, relief="flat", font=("Consolas", 10),
+            highlightthickness=1, highlightbackground=P.BORDER,
+            selectbackground=P.ACCENT_DK, padx=8, pady=6)
+        sb = ttk.Scrollbar(txt_frame, orient="vertical", command=self.txt_transcript.yview)
+        self.txt_transcript.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.txt_transcript.pack(side="left", fill="both", expand=True)
+        # colores para las etiquetas de hablante y timestamps
+        self.txt_transcript.tag_configure("ts", foreground=P.DIM)
+        self.txt_transcript.tag_configure("me", foreground=P.GREEN)
+        self.txt_transcript.tag_configure("them", foreground=P.ACCENT)
+
+
+    def _set_status(self, text, led_state=None):
+        # Corto: comparte la cabecera con el subtítulo y los botones.
+        self.lbl_status.config(text=text.upper()[:34])
+        if led_state:
+            self.led.set_state(led_state)
+
+    def _get_levels(self):
+        if self.recorder is not None and self.recording:
+            return self.recorder.get_levels()
+        return 0.0, 0.0
 
     # ---------------- Carpeta / dispositivos ----------------
 
@@ -847,12 +1450,25 @@ class App(tk.Tk):
             return
 
         self.recording = True
+        # El nombre del .txt depende de la reunión en curso: se mira el título
+        # de las ventanas de Teams AHORA (al detener podría estar ya cerrada).
+        self._meeting_prefix = detect_meeting_prefix()
+        self.visualizer.recording = True
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
         self.btn_transcribe.config(state="disabled")
-        self.lbl_status.config(text="Grabando audio del sistema + micrófono...")
+        self._set_status("Grabando sistema + micrófono", "recording")
         self.deiconify()
         self._tick_timer()
+        self._blink_rec()
+
+    def _blink_rec(self):
+        if not self.recording:
+            self.lbl_rec.config(text="")
+            return
+        self._rec_blink = not self._rec_blink
+        self.lbl_rec.config(text="● REC" if self._rec_blink else "  REC")
+        self.after(600, self._blink_rec)
 
     def _tick_timer(self):
         if not self.recording or self.recorder is None:
@@ -876,15 +1492,19 @@ class App(tk.Tk):
         # tardar bastante en grabaciones largas, así que lo hacemos en un hilo
         # aparte para no congelar (ni tumbar) la interfaz.
         self.recording = False
+        self.visualizer.recording = False
         self.btn_stop.config(state="disabled")
-        self.lbl_status.config(text="Procesando y alineando pistas...")
+        self._set_status("Procesando y alineando pistas...", "busy")
         output_dir = self.output_dir.get()
+        transcript_dir = self.transcript_dir.get().strip() or output_dir
+        prefix = getattr(self, "_meeting_prefix", DEFAULT_TRANSCRIPT_PREFIX)
         recorder = self.recorder
         self.recorder = None
         threading.Thread(
-            target=self._stop_worker, args=(recorder, output_dir), daemon=True).start()
+            target=self._stop_worker,
+            args=(recorder, output_dir, transcript_dir, prefix), daemon=True).start()
 
-    def _stop_worker(self, recorder, output_dir):
+    def _stop_worker(self, recorder, output_dir, transcript_dir, prefix):
         try:
             mixed, rate, sys_only, mic_only = recorder.stop_and_mix()
             errors = recorder.get_errors()
@@ -892,15 +1512,18 @@ class App(tk.Tk):
 
             os.makedirs(output_dir, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            mixed_path = os.path.join(output_dir, f"reunion_{stamp}.wav")
-            sys_path = os.path.join(output_dir, f"reunion_{stamp}_sistema.wav")
-            mic_path = os.path.join(output_dir, f"reunion_{stamp}_mic.wav")
+            paths = {
+                "mixed": os.path.join(output_dir, f"reunion_{stamp}.wav"),
+                "sys": os.path.join(output_dir, f"reunion_{stamp}_sistema.wav"),
+                "mic": os.path.join(output_dir, f"reunion_{stamp}_mic.wav"),
+                "txt": transcript_txt_path(transcript_dir, prefix),
+            }
 
-            save_wav_mono(mixed_path, mixed, rate)
-            save_wav_mono(sys_path, sys_only, rate)
-            save_wav_mono(mic_path, mic_only, rate)
+            save_wav_mono(paths["mixed"], mixed, rate)
+            save_wav_mono(paths["sys"], sys_only, rate)
+            save_wav_mono(paths["mic"], mic_only, rate)
 
-            self.after(0, lambda: self._on_stop_done(mixed_path, errors))
+            self.after(0, lambda: self._on_stop_done(paths, errors))
         except Exception as e:
             try:
                 recorder.close()
@@ -908,21 +1531,24 @@ class App(tk.Tk):
                 pass
             self.after(0, lambda: self._on_stop_error(e))
 
-    def _on_stop_done(self, mixed_path, errors):
+    def _on_stop_done(self, paths, errors):
         self.btn_start.config(state="normal")
         self.btn_transcribe.config(state="normal")
-        self.last_mixed_path = mixed_path
-        self.lbl_status.config(text=f"Grabación guardada: {mixed_path}")
+        self.last_paths = paths
+        self._set_status(f"Guardado: {os.path.basename(paths['mixed'])}", "ready")
         if errors:
             messagebox.showwarning("Avisos durante la grabación", "\n".join(errors))
         if self._quit_after_save:
             self._quit_after_save = False
             self._quit_app()
+            return
+        if self.auto_transcribe_var.get() and WHISPER_AVAILABLE:
+            self._transcribe()
 
     def _on_stop_error(self, error):
         self.btn_start.config(state="normal")
         self.btn_stop.config(state="disabled")
-        self.lbl_status.config(text="Error al procesar la grabación.")
+        self._set_status("Error al procesar la grabación", "idle")
         messagebox.showerror("Error al detener la grabación", str(error))
         if self._quit_after_save:
             # Falló el guardado; preguntamos si aun así quiere cerrar.
@@ -935,10 +1561,12 @@ class App(tk.Tk):
     def _toggle_auto_detect(self):
         if self.auto_detect_var.get():
             if not (PSUTIL_AVAILABLE and WIN32_AVAILABLE):
-                messagebox.showerror(
-                    "Faltan dependencias",
-                    "Instala: pip install psutil pywin32")
+                # La detección es siempre activa por diseño; si faltan
+                # dependencias solo lo reflejamos en el estado (el aviso
+                # ⚠ ya está visible en la sección de segundo plano) en vez
+                # de interrumpir el arranque con un diálogo.
                 self.auto_detect_var.set(False)
+                self._set_status("Detección no disponible (faltan dependencias)", "idle")
                 return
             keywords = [k for k in self.keywords_var.get().split(",")]
             self.meeting_watcher = MeetingWatcher(
@@ -948,12 +1576,12 @@ class App(tk.Tk):
                 poll_interval=self.poll_interval_var.get(),
             )
             self.meeting_watcher.start()
-            self.lbl_status.config(text="Detección automática activada. Vigilando reuniones de Teams...")
+            self._set_status("Vigilando Teams...", "watching")
         else:
             if self.meeting_watcher:
                 self.meeting_watcher.stop()
                 self.meeting_watcher = None
-            self.lbl_status.config(text="Detección automática desactivada.")
+            self._set_status("Detección desactivada", "ready")
 
     def _on_meeting_detected(self):
         # Llamado desde el hilo del watcher: hay que saltar al hilo de Tkinter.
@@ -967,6 +1595,32 @@ class App(tk.Tk):
     def _test_popup(self):
         self._show_meeting_popup()
 
+    # ---------------- Ajustes ----------------
+
+    def _open_settings(self):
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.lift()
+            self.settings_window.focus_set()
+            return
+        self.settings_window = SettingsWindow(self)
+
+    def _apply_settings(self):
+        """Persiste los ajustes y los aplica al watcher en marcha."""
+        try:
+            poll = min(max(int(self.poll_interval_var.get()), 2), 30)
+        except (tk.TclError, ValueError):
+            poll = 4
+        self.poll_interval_var.set(poll)
+        save_config({
+            "output_dir": self.output_dir.get().strip(),
+            "transcript_dir": self.transcript_dir.get().strip(),
+            "keywords": self.keywords_var.get(),
+            "poll_interval": poll,
+        })
+        if self.meeting_watcher:
+            self.meeting_watcher.update_keywords(self.keywords_var.get().split(","))
+            self.meeting_watcher.poll_interval = poll
+
     # ---------------- Inicio automático ----------------
 
     def _toggle_autostart(self):
@@ -977,10 +1631,10 @@ class App(tk.Tk):
         try:
             if self.autostart_var.get():
                 enable_autostart()
-                self.lbl_status.config(text="Inicio automático activado: arrancará minimizado en la bandeja al iniciar sesión.")
+                self._set_status("Inicio automático activado", "ready")
             else:
                 disable_autostart()
-                self.lbl_status.config(text="Inicio automático desactivado.")
+                self._set_status("Inicio automático desactivado", "ready")
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo cambiar el inicio automático:\n{e}")
             self.autostart_var.set(is_autostart_enabled())
@@ -999,9 +1653,10 @@ class App(tk.Tk):
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def _make_tray_image(self):
-        img = Image.new("RGB", (64, 64), "#202124")
+        img = Image.new("RGB", (64, 64), "#0a0e13")
         d = ImageDraw.Draw(img)
-        d.ellipse((14, 14, 50, 50), fill="#e74c3c")
+        d.ellipse((8, 8, 56, 56), outline="#00e5ff", width=4)
+        d.ellipse((22, 22, 42, 42), fill="#ff3860")
         return img
 
     def _tray_open(self, icon=None, item=None):
@@ -1042,7 +1697,7 @@ class App(tk.Tk):
                 # Guardar y salir: detenemos (guarda en segundo plano) y cerramos
                 # cuando termine, desde _on_stop_done / _on_stop_error.
                 self._quit_after_save = True
-                self.lbl_status.config(text="Guardando antes de salir...")
+                self._set_status("Guardando antes de salir...", "busy")
                 self._stop_recording()
                 return
             # No: descartar la grabación en curso sin guardar.
@@ -1054,6 +1709,7 @@ class App(tk.Tk):
                     pass
                 self.recorder = None
 
+        self._apply_settings()
         if self.meeting_watcher:
             self.meeting_watcher.stop()
         if self.tray_icon:
@@ -1066,38 +1722,125 @@ class App(tk.Tk):
     # ---------------- Transcripción ----------------
 
     def _transcribe(self):
+        """Transcribe la última grabación. Si está activado 'Tú / Ellos' y
+        existen las pistas separadas, transcribe cada una y entrelaza los
+        segmentos con etiqueta de hablante."""
+        if not self._check_whisper():
+            return
+        if not self.last_paths or not os.path.exists(self.last_paths["mixed"]):
+            messagebox.showwarning("Aviso", "Primero graba y detén una grabación.")
+            return
+
+        jobs = None
+        if self.speakers_var.get():
+            sys_p, mic_p = self.last_paths.get("sys"), self.last_paths.get("mic")
+            if sys_p and mic_p and os.path.exists(sys_p) and os.path.exists(mic_p):
+                jobs = [("Ellos", sys_p), ("Tú", mic_p)]
+        if jobs is None:
+            jobs = [(None, self.last_paths["mixed"])]
+
+        # Ruta calculada al detener la grabación (reunion_/weekly_AAAA-MM-DD.txt
+        # en la carpeta de transcripciones); re-transcribir sobreescribe el mismo.
+        autosave = self.last_paths.get("txt")
+        if not autosave:
+            autosave = transcript_txt_path(
+                self.transcript_dir.get().strip() or self.output_dir.get(),
+                DEFAULT_TRANSCRIPT_PREFIX)
+            self.last_paths["txt"] = autosave
+        self._run_transcription(jobs, autosave_path=autosave)
+
+    def _transcribe_file(self):
+        """Transcribe un archivo de audio cualquiera elegido por el usuario."""
+        if not self._check_whisper():
+            return
+        path = filedialog.askopenfilename(
+            initialdir=self.output_dir.get(),
+            filetypes=[("Audio", "*.wav *.mp3 *.m4a *.flac *.ogg *.opus"), ("Todos", "*.*")])
+        if not path:
+            return
+        base = os.path.splitext(path)[0]
+        self._run_transcription([(None, path)], autosave_path=base + "_transcripcion.txt")
+
+    def _check_whisper(self):
         if not WHISPER_AVAILABLE:
             messagebox.showerror(
                 "Falta dependencia",
                 "Instala faster-whisper:\npip install faster-whisper")
-            return
-        if not self.last_mixed_path or not os.path.exists(self.last_mixed_path):
-            messagebox.showwarning("Aviso", "Primero graba y detén una grabación.")
-            return
+            return False
+        if self.transcribing:
+            messagebox.showinfo("Transcripción", "Ya hay una transcripción en curso.")
+            return False
+        return True
 
+    def _run_transcription(self, jobs, autosave_path=None):
+        self.transcribing = True
         self.btn_transcribe.config(state="disabled")
-        self.lbl_status.config(text="Transcribiendo (puede tardar según el modelo)...")
-        threading.Thread(target=self._transcribe_worker, daemon=True).start()
+        self.txt_transcript.delete("1.0", tk.END)
+        self.progress.set(None)  # indeterminada mientras carga el modelo
+        self._set_status("Transcribiendo...", "busy")
+        model_size = self.whisper_model_combo.get()
+        lang = self.lang_entry.get().strip() or None
+        threading.Thread(
+            target=self._transcribe_worker,
+            args=(jobs, model_size, lang, autosave_path), daemon=True).start()
 
-    def _transcribe_worker(self):
+    def _transcribe_worker(self, jobs, model_size, lang, autosave_path):
         try:
-            model_size = self.whisper_model_combo.get()
-            lang = self.lang_entry.get().strip() or None
-            model = WhisperModel(model_size, device="cpu", compute_type="int8")
-            segments, info = model.transcribe(self.last_mixed_path, language=lang)
-            full_text = " ".join(seg.text.strip() for seg in segments)
-            self.transcript_text = full_text
-            self.after(0, lambda: self._on_transcribe_done(full_text))
+            segs = self.transcriber.transcribe_jobs(
+                jobs, model_size, language=lang,
+                on_segment=lambda s, l, t: self.after(0, self._append_segment, s, l, t),
+                on_progress=lambda f: self.after(0, self.progress.set, f),
+                on_phase=lambda msg: self.after(0, self.lbl_tr_status.config, {"text": msg}),
+            )
+            multi = len(jobs) > 1
+            text = self.transcriber.format_segments(
+                segs, with_timestamps=self.timestamps_var.get())
+            self.transcript_text = text
+
+            saved = None
+            if autosave_path and text.strip():
+                try:
+                    os.makedirs(os.path.dirname(autosave_path) or ".", exist_ok=True)
+                    with open(autosave_path, "w", encoding="utf-8") as f:
+                        f.write(text)
+                    saved = autosave_path
+                except OSError:
+                    pass
+
+            self.after(0, lambda: self._on_transcribe_done(segs, multi, saved))
         except Exception as e:
             self.after(0, lambda: messagebox.showerror("Error en transcripción", str(e)))
-            self.after(0, lambda: self.lbl_status.config(text="Error al transcribir."))
+            self.after(0, lambda: self._set_status("Error al transcribir", "idle"))
+            self.after(0, self.progress.hide)
         finally:
-            self.after(0, lambda: self.btn_transcribe.config(state="normal"))
+            self.transcribing = False
+            self.after(0, lambda: self.btn_transcribe.config(
+                state="normal" if self.last_paths else "disabled"))
 
-    def _on_transcribe_done(self, text):
-        self.txt_transcript.delete("1.0", tk.END)
-        self.txt_transcript.insert(tk.END, text)
-        self.lbl_status.config(text="Transcripción completada.")
+    def _append_segment(self, start, label, text):
+        """Streaming: añade un segmento al panel según se va transcribiendo."""
+        if self.timestamps_var.get():
+            self.txt_transcript.insert(tk.END, f"[{format_ts(start)}] ", "ts")
+        if label:
+            tag = "me" if label == "Tú" else "them"
+            self.txt_transcript.insert(tk.END, f"{label}: ", tag)
+        self.txt_transcript.insert(tk.END, text + "\n")
+        self.txt_transcript.see(tk.END)
+
+    def _on_transcribe_done(self, segs, multi, saved_path):
+        # Con varias pistas los segmentos llegaron intercalados por pista;
+        # reescribimos el panel ya ordenado por tiempo.
+        if multi:
+            self.txt_transcript.delete("1.0", tk.END)
+            for start, label, text in segs:
+                self._append_segment(start, label, text)
+        self.progress.set(1.0)
+        n = len(segs)
+        msg = f"{n} segmentos"
+        if saved_path:
+            msg += f" · guardado {os.path.basename(saved_path)}"
+        self.lbl_tr_status.config(text=msg)
+        self._set_status("Transcripción completada", "ready")
 
     def _save_transcript(self):
         text = self.txt_transcript.get("1.0", tk.END).strip()
