@@ -3,3 +3,4 @@ venv/
 crash.log
 config.json
 __pycache__/
+.claude
