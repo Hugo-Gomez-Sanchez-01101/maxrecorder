@@ -19,7 +19,11 @@
       "Bash(./venv/Scripts/python.exe /tmp/smoke2.py)",
       "Bash(ls -la /settings.png /smoke3.py /shot_settings.py)",
       "Bash(cygpath -w /settings.png)",
-      "Bash(./venv/Scripts/python.exe -c ' *)"
+      "Bash(./venv/Scripts/python.exe -c ' *)",
+      "Bash(git mv *)",
+      "Bash(git rm *)",
+      "Bash(./venv/Scripts/python.exe *)",
+      "Bash(git add *)"
     ]
   }
 }
