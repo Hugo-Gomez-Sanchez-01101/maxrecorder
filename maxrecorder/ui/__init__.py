@@ -1,1 +1,1 @@
-"""Interfaz gráfica (Tkinter, tema oscuro con animaciones)."""
+"""Graphical interface (Tkinter, dark theme with animations)."""

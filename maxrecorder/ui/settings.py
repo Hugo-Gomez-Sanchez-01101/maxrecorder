@@ -1,6 +1,6 @@
-"""Ventana de ajustes: carpeta por defecto de transcripciones y opciones de
-segundo plano (detección de reuniones, palabras clave, sondeo, arranque al
-iniciar Windows, probar el aviso). Se guardan en config.json al cerrar."""
+"""Settings window: recordings and transcripts folders, and background options
+(meeting detection, keywords, poll interval, startup at login, test the
+notification). Saved to config.json on close."""
 
 import tkinter as tk
 from tkinter import filedialog
@@ -22,34 +22,41 @@ class SettingsWindow(tk.Toplevel):
     def __init__(self, app):
         super().__init__(app)
         self.app = app
-        self.title("Ajustes — Max Recorder")
+        self.title("Settings — Max Recorder")
         self.configure(bg=P.BG)
         self.resizable(False, False)
         self.transient(app)
         self.geometry(f"+{app.winfo_rootx() + 90}+{app.winfo_rooty() + 70}")
         self.protocol("WM_DELETE_WINDOW", self._save_close)
 
-        tk.Label(self, text="AJUSTES", bg=P.BG, fg=P.ACCENT,
+        tk.Label(self, text="SETTINGS", bg=P.BG, fg=P.ACCENT,
                  font=("Consolas", 12, "bold"), anchor="w").pack(
             fill="x", padx=12, pady=(10, 0))
 
-        # ---- Transcripciones ----
-        _, tr = make_section(self, "Transcripciones")
-        row = tk.Frame(tr, bg=P.PANEL)
-        row.pack(fill="x", pady=2)
-        dark_label(row, text="Carpeta por defecto:").pack(side="left", padx=(2, 4))
-        dark_entry(row, textvariable=app.transcript_dir, width=45).pack(
+        # ---- Folders ----
+        _, folders = make_section(self, "Folders")
+        row_rec = tk.Frame(folders, bg=P.PANEL)
+        row_rec.pack(fill="x", pady=2)
+        dark_label(row_rec, text="Recordings:").pack(side="left", padx=(2, 4))
+        dark_entry(row_rec, textvariable=app.record_dir, width=45).pack(
             side="left", padx=4, fill="x", expand=True, ipady=3)
-        TechButton(row, text="ELEGIR...", command=self._choose_dir).pack(side="left", padx=4)
+        TechButton(row_rec, text="CHOOSE...", command=self._choose_record_dir).pack(side="left", padx=4)
 
-        # ---- Segundo plano ----
-        _, bg_sec = make_section(self, "Segundo plano · Detección de reuniones")
+        row_tr = tk.Frame(folders, bg=P.PANEL)
+        row_tr.pack(fill="x", pady=2)
+        dark_label(row_tr, text="Transcripts:").pack(side="left", padx=(2, 4))
+        dark_entry(row_tr, textvariable=app.transcript_dir, width=45).pack(
+            side="left", padx=4, fill="x", expand=True, ipady=3)
+        TechButton(row_tr, text="CHOOSE...", command=self._choose_transcript_dir).pack(side="left", padx=4)
+
+        # ---- Background ----
+        _, bg_sec = make_section(self, "Background · Meeting detection")
         row1 = tk.Frame(bg_sec, bg=P.PANEL)
         row1.pack(fill="x", pady=2)
-        dark_check(row1, text="Detectar reuniones automáticamente y avisar (siempre activa)",
+        dark_check(row1, text="Automatically detect meetings and notify (always on)",
                    variable=app.auto_detect_var, state="disabled",
                    disabledforeground=P.TEXT).pack(side="left")
-        dark_label(row1, text="Sondeo (s):").pack(side="left", padx=(16, 4))
+        dark_label(row1, text="Poll (s):").pack(side="left", padx=(16, 4))
         tk.Spinbox(row1, from_=2, to=30, width=4, textvariable=app.poll_interval_var,
                    bg=P.FIELD, fg=P.TEXT, buttonbackground=P.PANEL2,
                    insertbackground=P.ACCENT, relief="flat",
@@ -57,40 +64,46 @@ class SettingsWindow(tk.Toplevel):
 
         row2 = tk.Frame(bg_sec, bg=P.PANEL)
         row2.pack(fill="x", pady=2)
-        dark_label(row2, text="Palabras clave (respaldo por título):").pack(side="left", padx=(2, 4))
+        dark_label(row2, text="Keywords (title fallback):").pack(side="left", padx=(2, 4))
         dark_entry(row2, textvariable=app.keywords_var).pack(
             side="left", padx=4, fill="x", expand=True, ipady=3)
 
         row3 = tk.Frame(bg_sec, bg=P.PANEL)
         row3.pack(fill="x", pady=2)
         dark_check(row3,
-                   text="Arrancar automáticamente al iniciar sesión de Windows (en segundo plano)",
+                   text="Start automatically at Windows login (in the background)",
                    variable=app.autostart_var, command=app._toggle_autostart).pack(side="left")
         if not WINREG_AVAILABLE:
-            lbl_no_reg = dark_label(row3, text="(no disponible en esta plataforma)")
+            lbl_no_reg = dark_label(row3, text="(not available on this platform)")
             lbl_no_reg.config(fg=P.RED)
             lbl_no_reg.pack(side="left", padx=6)
 
         row4 = tk.Frame(bg_sec, bg=P.PANEL)
         row4.pack(fill="x", pady=(4, 2))
-        TechButton(row4, text="PROBAR AVISO", command=app._test_popup).pack(side="left", padx=2)
+        TechButton(row4, text="TEST NOTIFICATION", command=app._test_popup).pack(side="left", padx=2)
 
         if not (PSUTIL_AVAILABLE and WIN32_AVAILABLE):
-            tk.Label(bg_sec, text="Faltan dependencias para la detección: pip install psutil pywin32",
+            tk.Label(bg_sec, text="Missing dependencies for detection: pip install psutil pywin32",
                      bg=P.PANEL, fg=P.AMBER, font=P.FONT_SM, anchor="w").pack(fill="x")
         if not TRAY_AVAILABLE:
-            tk.Label(bg_sec, text="Para el segundo plano instala: pip install pystray pillow",
+            tk.Label(bg_sec, text="For background mode install: pip install pystray pillow",
                      bg=P.PANEL, fg=P.AMBER, font=P.FONT_SM, anchor="w").pack(fill="x")
 
-        # ---- Cierre ----
+        # ---- Close ----
         btns = tk.Frame(self, bg=P.BG)
         btns.pack(fill="x", padx=12, pady=10)
-        TechButton(btns, kind="primary", text="GUARDAR Y CERRAR",
+        TechButton(btns, kind="primary", text="SAVE AND CLOSE",
                    command=self._save_close).pack(side="right")
 
-    def _choose_dir(self):
+    def _choose_record_dir(self):
         d = filedialog.askdirectory(
-            initialdir=self.app.transcript_dir.get() or self.app.output_dir.get(),
+            initialdir=self.app.record_dir.get(), parent=self)
+        if d:
+            self.app.record_dir.set(d)
+
+    def _choose_transcript_dir(self):
+        d = filedialog.askdirectory(
+            initialdir=self.app.transcript_dir.get() or self.app.record_dir.get(),
             parent=self)
         if d:
             self.app.transcript_dir.set(d)

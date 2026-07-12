@@ -1,14 +1,14 @@
 """
-Diagnóstico de detección de reuniones de Teams.
+Teams meeting detection diagnostics.
 
-1) Lista las ventanas visibles de Teams (método por título, poco fiable).
-2) Vuelca el uso ACTUAL del micrófono por app según el registro de Windows
-   (CapabilityAccessManager). Cuando una app está usando el micro AHORA mismo,
-   su valor 'LastUsedTimeStop' es 0. Esta es la señal robusta para saber si
-   Teams está en una llamada/reunión, sin depender del título de la ventana.
+1) Lists the visible Teams windows (title method, not very reliable).
+2) Dumps the CURRENT microphone usage per app from the Windows registry
+   (CapabilityAccessManager). When an app is using the mic RIGHT NOW, its
+   'LastUsedTimeStop' value is 0. This is the robust signal to tell whether
+   Teams is in a call/meeting, without depending on the window title.
 
-Uso:  python diag_teams.py
-Ejecútalo una vez FUERA de reunión y otra DENTRO, y compara la sección [MIC].
+Usage:  python diag_teams.py
+Run it once OUTSIDE a meeting and once INSIDE, and compare the [MIC] section.
 """
 
 import winreg
@@ -46,7 +46,7 @@ def _read_value(key, name):
 
 
 def _iter_consent_apps(root, subpath):
-    """Genera (app_name, LastUsedTimeStart, LastUsedTimeStop) de cada subclave."""
+    """Yields (app_name, LastUsedTimeStart, LastUsedTimeStop) for each subkey."""
     try:
         key = winreg.OpenKey(root, subpath)
     except OSError:
@@ -66,22 +66,22 @@ def _iter_consent_apps(root, subpath):
 
 
 def dump_mic_usage():
-    print("\n[MIC] Uso del micrófono por app (Stop==0 => usándolo AHORA):")
+    print("\n[MIC] Microphone usage per app (Stop==0 => using it NOW):")
     rows = []
-    # Apps empaquetadas (el nuevo Teams es MSIX: 'MSTeams_8wekyb3d8bbwe')
+    # Packaged apps (the new Teams is MSIX: 'MSTeams_8wekyb3d8bbwe')
     for name, start, stop in _iter_consent_apps(winreg.HKEY_CURRENT_USER, MIC_CONSENT_KEY):
         if name.lower() == "nonpackaged":
             continue
         rows.append((name, start, stop))
-    # Apps no empaquetadas (Teams clásico)
+    # Non-packaged apps (classic Teams)
     for name, start, stop in _iter_consent_apps(
             winreg.HKEY_CURRENT_USER, MIC_CONSENT_KEY + r"\NonPackaged"):
         rows.append((name, start, stop))
 
     if not rows:
-        print("  (sin entradas; puede que ninguna app haya usado el micro)")
+        print("  (no entries; maybe no app has used the mic)")
     for name, start, stop in rows:
-        in_use = "  <<< EN USO AHORA" if stop == 0 else ""
+        in_use = "  <<< IN USE NOW" if stop == 0 else ""
         is_teams = "teams" in name.lower()
         mark = " [TEAMS]" if is_teams else ""
         print(f"  {name}{mark}: start={start} stop={stop}{in_use}")
@@ -89,12 +89,12 @@ def dump_mic_usage():
 
 def dump_windows():
     pids = teams_pids()
-    print(f"[WIN] Procesos de Teams: {len(pids)}")
+    print(f"[WIN] Teams processes: {len(pids)}")
     for pid, name in pids.items():
         print(f"  PID {pid}: {name}")
     if not pids:
         return
-    print("[WIN] Ventanas visibles de Teams:")
+    print("[WIN] Visible Teams windows:")
     rows = []
 
     def enum_handler(hwnd, _):
@@ -116,7 +116,7 @@ def dump_windows():
 def main():
     dump_windows()
     dump_mic_usage()
-    print("\n--> Compara la seccion [MIC] dentro y fuera de reunion.")
+    print("\n--> Compare the [MIC] section inside and outside a meeting.")
 
 
 if __name__ == "__main__":

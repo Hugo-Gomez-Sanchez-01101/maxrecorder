@@ -25,7 +25,14 @@
       "Bash(./venv/Scripts/python.exe *)",
       "Bash(git add *)",
       "Bash(git commit *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(echo \"PID: $!\")",
+      "Bash(tasklist)",
+      "Bash(wmic process *)",
+      "Bash(powershell -NoProfile -Command \"Get-Process python -ErrorAction SilentlyContinue | Select-Object Id,Path\")",
+      "Bash(tasklist *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell($k = Get-ItemProperty -Path \"HKCU:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\" -ErrorAction SilentlyContinue; if \\($k.MaxRecorder\\) { \"MaxRecorder = $\\($k.MaxRecorder\\)\" } else { \"No hay entrada MaxRecorder\" }; if \\($k.GrabadorTeams\\) { \"GrabadorTeams = $\\($k.GrabadorTeams\\)\" })"
     ]
   }
 }

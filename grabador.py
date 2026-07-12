@@ -1,8 +1,8 @@
-"""Punto de entrada de Max Recorder.
+"""Max Recorder entry point.
 
-Lanza la aplicación (paquete maxrecorder). Lo usan Grabador.bat y la entrada
-de inicio automático del registro de Windows; el argumento --tray arranca
-minimizado en la bandeja del sistema.
+Launches the application (maxrecorder package). Used by Grabador.bat and the
+Windows registry autostart entry; the --tray argument starts minimized in the
+system tray.
 """
 
 import os
@@ -13,10 +13,22 @@ import faulthandler
 
 def main():
     if sys.platform != "win32":
-        print("Aviso: esta herramienta usa WASAPI loopback y solo funciona en Windows.")
+        print("Warning: this tool uses WASAPI loopback and only works on Windows.")
+    else:
+        # Without this, Windows groups the process under the interpreter's
+        # default AppUserModelID (python.exe/pythonw.exe) and the taskbar
+        # shows the generic Python icon instead of the window's, even if it
+        # was set with iconbitmap. It must be called BEFORE creating any
+        # window.
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "MaxRecorder.App")
+        except Exception:
+            pass
 
-    # Si se produce un cierre inesperado (crash nativo), este log guardará la
-    # traza C/Python exacta para diagnosticarlo.
+    # If an unexpected shutdown happens (native crash), this log will store the
+    # exact C/Python traceback to diagnose it.
     try:
         crash_log = open(
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log"),
@@ -25,11 +37,11 @@ def main():
     except Exception:
         faulthandler.enable()
 
-    parser = argparse.ArgumentParser(description="Max Recorder — Grabador de reuniones de Teams")
+    parser = argparse.ArgumentParser(description="Max Recorder — Teams meeting recorder")
     parser.add_argument(
         "--tray", action="store_true",
-        help="Arrancar minimizado en la bandeja con la detección de reuniones activada "
-             "(lo usa el inicio automático al iniciar sesión).")
+        help="Start minimized in the tray with meeting detection enabled "
+             "(used by autostart at login).")
     args = parser.parse_args()
 
     from maxrecorder.ui.app import App

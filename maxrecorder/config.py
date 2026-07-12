@@ -1,28 +1,27 @@
-"""Constantes de configuración y persistencia de ajustes (config.json)."""
+"""Configuration constants and settings persistence (config.json)."""
 
 import os
 import json
 
-# Raíz del proyecto (carpeta que contiene grabador.py y este paquete).
+# Project root (folder containing grabador.py and this package).
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENTRY_SCRIPT = os.path.join(ROOT_DIR, "grabador.py")
 
 _DOCS_MAX_RECORDER = os.path.join(os.path.expanduser("~"), "Documents", "MaxRecorder")
-OUTPUT_DIR_DEFAULT = os.path.join(_DOCS_MAX_RECORDER, "Records")
+RECORD_DIR_DEFAULT = os.path.join(_DOCS_MAX_RECORDER, "Records")
 TRANSCRIPT_DIR_DEFAULT = os.path.join(_DOCS_MAX_RECORDER, "Transcripts")
 
-DEFAULT_MEETING_KEYWORDS = ["reunión", "reunion", "meeting", "llamada", "call",
-                            "[Weekly] Hacking Team"]
+DEFAULT_MEETING_KEYWORDS = ["meeting", "call", "weekly", "monthly", "daily"]
 
-# Nombre del .txt de transcripción: por defecto reunion_AAAA-MM-DD.txt. Si el
-# título de alguna ventana de Teams al empezar a grabar contiene una de estas
-# subcadenas, se usa su prefijo en su lugar (p.ej. weekly_AAAA-MM-DD.txt).
-DEFAULT_TRANSCRIPT_PREFIX = "reunion"
+# Transcript .txt name: meeting_YYYY-MM-DD.txt by default. If a Teams window
+# title at the moment recording starts contains one of these substrings, its
+# prefix is used instead (e.g. weekly_YYYY-MM-DD.txt).
+DEFAULT_TRANSCRIPT_PREFIX = "meeting"
 MEETING_NAME_RULES = [
     ("[weekly] hacking team", "weekly"),
 ]
 
-# Ajustes persistentes (carpetas, palabras clave, sondeo) en la raíz del proyecto.
+# Persistent settings (folders, keywords, poll interval) in the project root.
 CONFIG_PATH = os.path.join(ROOT_DIR, "config.json")
 
 

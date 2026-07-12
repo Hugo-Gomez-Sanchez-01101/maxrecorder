@@ -1,5 +1,5 @@
-"""Motor de transcripción (faster-whisper): caché de modelo, filtro VAD,
-streaming por segmentos y modo multi-pista con etiquetas de hablante."""
+"""Transcription engine (faster-whisper): model cache, VAD filter, segment
+streaming and multi-track mode with speaker labels."""
 
 import os
 import threading
@@ -22,8 +22,9 @@ def format_ts(seconds: float) -> str:
 
 
 def transcript_txt_path(directory: str, prefix: str) -> str:
-    """Ruta del .txt de transcripción: <prefijo>_AAAA-MM-DD.txt en 'directory'.
-    Si ya existe uno de ese día (otra reunión), añade _2, _3... para no pisarlo."""
+    """Transcript .txt path: <prefix>_YYYY-MM-DD.txt in 'directory'. If one for
+    that day already exists (another meeting), appends _2, _3... to avoid
+    overwriting it."""
     date = datetime.now().strftime("%Y-%m-%d")
     path = os.path.join(directory, f"{prefix}_{date}.txt")
     n = 2
@@ -34,11 +35,11 @@ def transcript_txt_path(directory: str, prefix: str) -> str:
 
 
 class Transcriber:
-    """Envuelve faster-whisper con:
-      - caché del modelo (cargarlo es lo más lento; se reutiliza entre usos),
-      - filtro VAD para saltar silencios,
-      - callbacks de progreso y de segmento (para streaming en la UI),
-      - modo multi-pista con etiquetas de hablante (Tú / Ellos)."""
+    """Wraps faster-whisper with:
+      - model cache (loading is the slowest step; it is reused between uses),
+      - VAD filter to skip silences,
+      - progress and segment callbacks (for streaming in the UI),
+      - multi-track mode with speaker labels (You / Them)."""
 
     def __init__(self):
         self._models = {}
@@ -53,11 +54,11 @@ class Transcriber:
 
     def transcribe_jobs(self, jobs, model_size, language=None,
                         on_segment=None, on_progress=None, on_phase=None):
-        """jobs: lista de (etiqueta|None, ruta). Devuelve lista de segmentos
-        (start, label, text) ordenada por tiempo. Los callbacks llegan desde
-        este mismo hilo (el llamante decide cómo saltar al hilo de la UI)."""
+        """jobs: list of (label|None, path). Returns a list of segments
+        (start, label, text) ordered by time. Callbacks arrive from this same
+        thread (the caller decides how to hop to the UI thread)."""
         if on_phase:
-            on_phase(f"Cargando modelo '{model_size}'...")
+            on_phase(f"Loading model '{model_size}'...")
         model = self.get_model(model_size)
 
         kwargs = dict(
@@ -76,13 +77,13 @@ class Transcriber:
         for idx, (label, path) in enumerate(jobs):
             if on_phase:
                 name = os.path.basename(path)
-                on_phase(f"Transcribiendo {name}" + (f" [{label}]" if label else "") + "...")
+                on_phase(f"Transcribing {name}" + (f" [{label}]" if label else "") + "...")
             segments, info = model.transcribe(path, **kwargs)
             duration = max(getattr(info, "duration", 0.0) or 0.0, 0.001)
             for seg in segments:
                 text = seg.text.strip()
-                # Descarta segmentos que el propio modelo considera no-habla
-                # (típica fuente de alucinaciones en silencios).
+                # Discard segments the model itself considers non-speech
+                # (a common source of hallucinations in silences).
                 if not text or getattr(seg, "no_speech_prob", 0.0) > 0.85:
                     continue
                 all_segs.append((seg.start, label, text))

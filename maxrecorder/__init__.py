@@ -1,4 +1,4 @@
-"""Max Recorder: grabadora de reuniones de Teams (sistema + micrófono) con
-transcripción local mediante faster-whisper. Solo Windows (WASAPI loopback)."""
+"""Max Recorder: Teams meeting recorder (system + microphone) with local
+transcription via faster-whisper. Windows only (WASAPI loopback)."""
 
 __version__ = "2.0"

@@ -1,5 +1,5 @@
-"""Detección de reuniones de Teams: procesos, títulos de ventana, uso del
-micrófono según el registro de Windows y el watcher en segundo plano."""
+"""Teams meeting detection: processes, window titles, microphone usage from
+the Windows registry, and the background watcher."""
 
 import threading
 
@@ -27,9 +27,9 @@ except ImportError:
 
 TEAMS_PROCESS_NAMES = {"teams.exe", "ms-teams.exe"}
 
-# Detección de "en reunión" por uso del micrófono (fiable, sin depender del
-# título de ventana). Windows registra aquí, por app, cuándo empezó/terminó de
-# usar el micro; si LastUsedTimeStop == 0, la app lo está usando AHORA mismo.
+# "In a meeting" detection by microphone usage (reliable, without depending on
+# the window title). Windows records here, per app, when it started/stopped
+# using the mic; if LastUsedTimeStop == 0, the app is using it RIGHT NOW.
 MIC_CONSENT_KEY = (
     r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager"
     r"\ConsentStore\microphone"
@@ -37,7 +37,7 @@ MIC_CONSENT_KEY = (
 
 
 def teams_pids():
-    """PIDs de los procesos de Teams en ejecución (vacío si no hay)."""
+    """PIDs of running Teams processes (empty if none)."""
     pids = set()
     if not PSUTIL_AVAILABLE:
         return pids
@@ -52,7 +52,7 @@ def teams_pids():
 
 
 def teams_window_titles(pids):
-    """Títulos de las ventanas visibles pertenecientes a los procesos dados."""
+    """Titles of the visible windows belonging to the given processes."""
     titles = []
     if not WIN32_AVAILABLE or not pids:
         return titles
@@ -78,9 +78,9 @@ def teams_window_titles(pids):
 
 
 def detect_meeting_prefix() -> str:
-    """Prefijo para el nombre del .txt según el título de la reunión de Teams
-    en curso (ver MEETING_NAME_RULES). Si no se puede determinar o no hay
-    regla que aplique, devuelve el prefijo por defecto ('reunion')."""
+    """Prefix for the .txt name based on the title of the current Teams meeting
+    (see MEETING_NAME_RULES). If it cannot be determined or no rule applies,
+    returns the default prefix ('meeting')."""
     if not (WIN32_AVAILABLE and PSUTIL_AVAILABLE):
         return DEFAULT_TRANSCRIPT_PREFIX
     try:
@@ -96,24 +96,24 @@ def detect_meeting_prefix() -> str:
 
 
 class MeetingWatcher(threading.Thread):
-    """Sondea periódicamente si Teams está en una reunión/llamada.
+    """Periodically polls whether Teams is in a meeting/call.
 
-    Señal PRINCIPAL (fiable): que Teams esté usando el micrófono en ese
-    momento, según el registro de Windows (CapabilityAccessManager). Teams
-    toma el micro al entrar en una llamada y lo suelta al salir, así que es
-    una señal mucho más robusta que el título de la ventana (que solo lleva el
-    nombre de la reunión).
+    PRIMARY signal (reliable): that Teams is using the microphone at that
+    moment, according to the Windows registry (CapabilityAccessManager). Teams
+    grabs the mic when it joins a call and releases it when it leaves, so this
+    is a much more robust signal than the window title (which only carries the
+    meeting name).
 
-    Señal de RESPALDO (si no hay acceso al registro): proceso de Teams en
-    ejecución + ventana visible cuyo título contiene una palabra clave. Menos
-    fiable; solo se usa como último recurso."""
+    FALLBACK signal (if there is no registry access): a running Teams process
+    + a visible window whose title contains a keyword. Less reliable; only used
+    as a last resort."""
 
     def __init__(self, on_meeting_start, on_meeting_end=None,
                  keywords=None, poll_interval=4):
         super().__init__(daemon=True)
         self.on_meeting_start = on_meeting_start
         self.on_meeting_end = on_meeting_end
-        # keywords: solo se usan en el método de respaldo por título de ventana.
+        # keywords: only used by the fallback window-title method.
         self.keywords = [k.strip().lower() for k in (keywords or DEFAULT_MEETING_KEYWORDS) if k.strip()]
         self.poll_interval = poll_interval
         self._stop_event = threading.Event()
@@ -127,8 +127,8 @@ class MeetingWatcher(threading.Thread):
 
     @staticmethod
     def _consent_teams_active(subpath):
-        """True si alguna subclave cuyo nombre contiene 'teams' tiene
-        LastUsedTimeStop == 0 (micrófono en uso ahora mismo)."""
+        """True if any subkey whose name contains 'teams' has
+        LastUsedTimeStop == 0 (microphone in use right now)."""
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, subpath)
         except OSError:
@@ -155,8 +155,9 @@ class MeetingWatcher(threading.Thread):
         return active
 
     def _teams_using_mic(self):
-        """True/False si Teams está usando el micrófono ahora. Devuelve None si
-        no se puede determinar por el registro (para caer al método de respaldo)."""
+        """True/False whether Teams is using the microphone now. Returns None if
+        it cannot be determined from the registry (to fall back to the other
+        method)."""
         if not WINREG_AVAILABLE:
             return None
         try:
@@ -166,10 +167,10 @@ class MeetingWatcher(threading.Thread):
             return None
 
     def _meeting_window_open(self, pids):
-        """True si alguna ventana visible PERTENECIENTE A TEAMS tiene un título
-        con palabra clave de reunión. Se restringe a ventanas de Teams para no
-        dar falsos positivos con otras ventanas (p.ej. la propia app 'Max
-        Recorder', un Word titulado 'meeting', etc.)."""
+        """True if any visible window BELONGING TO TEAMS has a title with a
+        meeting keyword. Restricted to Teams windows to avoid false positives
+        with other windows (e.g. the 'Max Recorder' app itself, a Word document
+        titled 'meeting', etc.)."""
         for title in teams_window_titles(pids):
             title_l = title.lower()
             if any(k in title_l for k in self.keywords):
@@ -181,12 +182,12 @@ class MeetingWatcher(threading.Thread):
             try:
                 mic = self._teams_using_mic()
                 if mic is None:
-                    # Sin registro: respaldo por título de ventana de Teams.
+                    # No registry: fall back to the Teams window title.
                     pids = teams_pids()
                     meeting_now = bool(pids) and self._meeting_window_open(pids)
                 else:
-                    # Señal fiable por micrófono. Confirmamos que Teams sigue vivo
-                    # (evita una entrada obsoleta si Teams murió reteniendo el micro).
+                    # Reliable mic signal. We confirm Teams is still alive
+                    # (avoids a stale entry if Teams died holding the mic).
                     meeting_now = bool(mic) and bool(teams_pids())
             except Exception:
                 meeting_now = False

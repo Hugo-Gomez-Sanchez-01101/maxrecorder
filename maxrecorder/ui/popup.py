@@ -1,4 +1,4 @@
-"""Popup de aviso de reunión detectada, con animación de entrada."""
+"""Detected-meeting notification popup, with a slide-in animation."""
 
 import tkinter as tk
 
@@ -18,7 +18,7 @@ class MeetingPopup(tk.Toplevel):
         sx, sy = self.winfo_screenwidth(), self.winfo_screenheight()
         self._final_x = sx - self.w - 24
         self._y = sy - self.h - 70
-        # arranca fuera de pantalla (derecha) y entra deslizándose
+        # starts off-screen (right) and slides in
         self._x = float(sx)
         self.geometry(f"{self.w}x{self.h}+{int(self._x)}+{self._y}")
         self.configure(bg=P.PANEL, highlightthickness=1, highlightbackground=P.ACCENT)
@@ -28,19 +28,19 @@ class MeetingPopup(tk.Toplevel):
         self._led = StatusLED(head, bg=P.PANEL)
         self._led.set_state("recording")
         self._led.pack(side="left", padx=(0, 8))
-        tk.Label(head, text="REUNIÓN DE TEAMS DETECTADA",
+        tk.Label(head, text="TEAMS MEETING DETECTED",
                  bg=P.PANEL, fg=P.TEXT, font=("Consolas", 10, "bold"),
                  anchor="w").pack(side="left")
 
-        tk.Label(self, text="¿Quieres iniciar la grabación ahora?",
+        tk.Label(self, text="Do you want to start recording now?",
                  bg=P.PANEL, fg=P.DIM, font=P.FONT, anchor="w",
                  justify="left").pack(fill="x", padx=14, pady=(2, 10))
 
         btns = tk.Frame(self, bg=P.PANEL)
         btns.pack(padx=14, pady=4, fill="x")
-        TechButton(btns, kind="danger", text="●  GRABAR",
+        TechButton(btns, kind="danger", text="●  RECORD",
                    command=self._accept, width=11).pack(side="left", padx=(0, 8))
-        TechButton(btns, kind="ghost", text="IGNORAR",
+        TechButton(btns, kind="ghost", text="DISMISS",
                    command=self._dismiss, width=11).pack(side="left")
 
         self._slide_in()

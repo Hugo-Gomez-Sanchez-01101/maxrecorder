@@ -1,9 +1,9 @@
-"""Captura y procesado de audio: utilidades de mezcla/alineación y el
-grabador dual (loopback del sistema + micrófono) sobre WASAPI."""
+"""Audio capture and processing: mixing/alignment helpers and the dual
+recorder (system loopback + microphone) over WASAPI."""
 
 import time
 import wave
-import threading  # noqa: F401  (documenta que DualRecorder se usa entre hilos)
+import threading  # noqa: F401  (documents that DualRecorder is used across threads)
 
 import numpy as np
 
@@ -25,13 +25,13 @@ TARGET_RATE = 44100
 
 
 # --------------------------------------------------------------------------
-# Utilidades: resample, alineación temporal y mezcla
+# Helpers: resampling, time alignment and mixing
 # --------------------------------------------------------------------------
 
 def resample_linear(data: np.ndarray, orig_rate: float, target_rate: int) -> np.ndarray:
-    """Resamplea un array 1D (mono) a target_rate. orig_rate puede ser la tasa
-    "efectiva" real (nº muestras / duración real en reloj de pared), lo que
-    corrige el drift entre el reloj del dispositivo y el tiempo real."""
+    """Resample a 1D (mono) array to target_rate. orig_rate can be the real
+    "effective" rate (num samples / real wall-clock duration), which corrects
+    the drift between the device clock and real time."""
     if len(data) == 0 or orig_rate <= 0:
         return data.astype(np.float32)
     duration = len(data) / orig_rate
@@ -64,12 +64,11 @@ def pad_front(arr: np.ndarray, n_samples: int) -> np.ndarray:
 def estimate_fine_shift(reference: np.ndarray, other: np.ndarray, rate: int,
                          max_shift_sec: float = 1.0, corr_threshold: float = 0.25,
                          window_sec: float = 20.0) -> int:
-    """Corrige un desfase residual (milisegundos) entre pistas usando
-    correlación cruzada sobre una ventana inicial, aprovechando que el mic
-    suele captar una fuga tenue del audio de los altavoces. Devuelve el
-    desplazamiento en muestras a aplicar sobre 'other' (positivo = retrasar
-    'other'). Si la correlación no es fiable (p.ej. usas auriculares, sin
-    fuga de audio), devuelve 0 y no toca nada."""
+    """Corrects a residual offset (milliseconds) between tracks using cross-
+    correlation over an initial window, taking advantage of the faint speaker
+    leak the mic usually picks up. Returns the shift in samples to apply to
+    'other' (positive = delay 'other'). If the correlation is not reliable
+    (e.g. you use headphones, no audio leak), returns 0 and changes nothing."""
     if not SCIPY_AVAILABLE:
         return 0
     n = int(window_sec * rate)
@@ -79,7 +78,7 @@ def estimate_fine_shift(reference: np.ndarray, other: np.ndarray, rate: int,
         return 0
     a = a - a.mean()
     b = b - b.mean()
-    # downsample a ~2000 Hz para que la correlación sea rápida
+    # downsample to ~2000 Hz so the correlation is fast
     factor = max(int(rate // 2000), 1)
     a_ds = a[::factor]
     b_ds = b[::factor]
@@ -103,8 +102,8 @@ def estimate_fine_shift(reference: np.ndarray, other: np.ndarray, rate: int,
 
 
 def apply_shift(arr: np.ndarray, shift_samples: int) -> np.ndarray:
-    """Desplaza 'arr' shift_samples hacia adelante (positivo) o lo recorta
-    por delante (negativo)."""
+    """Shifts 'arr' shift_samples forward (positive) or trims it from the
+    front (negative)."""
     if shift_samples == 0:
         return arr
     if shift_samples > 0:
@@ -131,20 +130,20 @@ def save_wav_mono(path: str, samples_int16: np.ndarray, sample_rate: int):
 
 
 # --------------------------------------------------------------------------
-# Grabador dual (sistema + micrófono) con timestamps de reloj de pared
+# Dual recorder (system + microphone) with wall-clock timestamps
 # --------------------------------------------------------------------------
 
 class DualRecorder:
-    """Graba en paralelo el loopback del sistema y el micrófono elegido,
-    registrando timestamps reales de inicio/fin de cada pista para poder
-    alinearlas correctamente al mezclar. Expone además el nivel RMS
-    instantáneo de cada pista (para el visualizador de la UI)."""
+    """Records the system loopback and the chosen microphone in parallel,
+    storing real start/end timestamps for each track so they can be aligned
+    correctly when mixing. Also exposes the instantaneous RMS level of each
+    track (for the UI visualizer)."""
 
     def __init__(self, mic_device_index=None):
         if pyaudio is None:
             raise RuntimeError(
-                "PyAudioWPatch no está instalado o no estás en Windows. "
-                "Instala con: pip install PyAudioWPatch"
+                "PyAudioWPatch is not installed or you are not on Windows. "
+                "Install with: pip install PyAudioWPatch"
             )
         self.p = pyaudio.PyAudio()
         self.loopback_info = self._get_default_loopback_device()
@@ -176,9 +175,9 @@ class DualRecorder:
                 if default_speakers["name"] in loopback["name"]:
                     return loopback
             raise RuntimeError(
-                "No se encontró el dispositivo loopback correspondiente a la salida "
-                "de audio por defecto. Activa 'Mezcla estéreo' en Windows o instala "
-                "VB-Cable como alternativa."
+                "Could not find the loopback device matching the default audio "
+                "output. Enable 'Stereo Mix' in Windows or install VB-Cable as "
+                "an alternative."
             )
         return default_speakers
 
@@ -200,10 +199,10 @@ class DualRecorder:
         self._recording = True
         self._wall_start = time.time()
 
-        # Capturamos con callbacks (no lectura bloqueante): WASAPI loopback
-        # bloquea stream.read() cuando no suena nada, lo que dejaba hilos
-        # colgados y provocaba un crash nativo al cerrar. Con callback,
-        # PortAudio nos entrega los datos y el cierre es limpio y seguro.
+        # We capture with callbacks (not blocking reads): WASAPI loopback
+        # blocks stream.read() when nothing is playing, which left threads
+        # hanging and caused a native crash on close. With a callback,
+        # PortAudio hands us the data and shutdown is clean and safe.
         self._sys_stream = self._open_stream(
             self.loopback_info, self._sys_frames, self._sys_timing,
             self._sys_error, self._sys_level)
@@ -219,7 +218,7 @@ class DualRecorder:
 
         def callback(in_data, frame_count, time_info, status):
             frame_list.append(in_data)
-            # Nivel RMS normalizado (0..1) con suavizado, para el visualizador.
+            # Normalized RMS level (0..1) with smoothing, for the visualizer.
             arr = np.frombuffer(in_data, dtype=np.int16)
             if arr.size:
                 rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2))) / 32768.0
@@ -237,7 +236,7 @@ class DualRecorder:
                 stream_callback=callback,
             )
         except Exception as e:
-            error_holder["error"] = f"No se pudo abrir '{device_info['name']}': {e}"
+            error_holder["error"] = f"Could not open '{device_info['name']}': {e}"
             return None
         timing["start"] = time.perf_counter()
         return stream
@@ -248,22 +247,22 @@ class DualRecorder:
         return time.time() - self._wall_start
 
     def get_levels(self):
-        """(nivel_sistema, nivel_micrófono) en 0..1, suavizados."""
+        """(system_level, microphone_level) in 0..1, smoothed."""
         return self._sys_level["v"], self._mic_level["v"]
 
     def get_errors(self):
         errs = []
         if "error" in self._sys_error:
-            errs.append("Audio del sistema: " + self._sys_error["error"])
+            errs.append("System audio: " + self._sys_error["error"])
         if "error" in self._mic_error:
-            errs.append("Micrófono: " + self._mic_error["error"])
+            errs.append("Microphone: " + self._mic_error["error"])
         return errs
 
     def stop_and_mix(self, target_rate: int = TARGET_RATE, fine_sync: bool = True):
-        """Detiene la grabación, alinea temporalmente ambas pistas (offset de
-        arranque + corrección de drift por reloj real + ajuste fino opcional
-        por correlación cruzada) y devuelve (mixed, rate, sys_track, mic_track)."""
-        # Marca de fin (reloj de pared) para ambos streams antes de pararlos.
+        """Stops recording, time-aligns both tracks (start offset + real-clock
+        drift correction + optional fine adjustment by cross-correlation) and
+        returns (mixed, rate, sys_track, mic_track)."""
+        # End marker (wall clock) for both streams before stopping them.
         stop_ts = time.perf_counter()
         for stream, timing in ((self._sys_stream, self._sys_timing),
                                (self._mic_stream, self._mic_timing)):
@@ -286,21 +285,21 @@ class DualRecorder:
         sys_mono = bytes_to_float_mono(sys_raw, sys_channels)
         mic_mono = bytes_to_float_mono(mic_raw, mic_channels)
 
-        # --- Resample por tasa NOMINAL del dispositivo ---
-        # OJO: NO usamos "muestras/duración de pared" como tasa efectiva. WASAPI
-        # loopback no entrega muestras durante los silencios (y el primer buffer
-        # del callback llega con latencia), así que la cuenta de muestras del
-        # sistema es menor que la duración de pared -> la tasa efectiva saldría
-        # demasiado baja y el audio se ESTIRARÍA (se oye ralentizado y grave).
-        # El drift real de reloj es <0.5% e imperceptible, así que la tasa
-        # nominal es lo correcto y robusto aquí.
+        # --- Resample by the device NOMINAL rate ---
+        # NOTE: do NOT use "samples/wall-clock duration" as the effective rate.
+        # WASAPI loopback does not deliver samples during silences (and the
+        # first callback buffer arrives with latency), so the system sample
+        # count is lower than the wall-clock duration -> the effective rate
+        # would come out too low and the audio would be STRETCHED (sounds
+        # slowed down and low-pitched). The real clock drift is <0.5% and
+        # imperceptible, so the nominal rate is the correct, robust choice.
         sys_nom_rate = self._sys_timing.get("nominal_rate", target_rate)
         mic_nom_rate = self._mic_timing.get("nominal_rate", target_rate)
 
         sys_target = resample_linear(sys_mono, sys_nom_rate, target_rate)
         mic_target = resample_linear(mic_mono, mic_nom_rate, target_rate)
 
-        # --- Alineación de offset de arranque entre los dos hilos ---
+        # --- Start-offset alignment between the two threads ---
         sys_start = self._sys_timing.get("start")
         mic_start = self._mic_timing.get("start")
         if sys_start is not None and mic_start is not None:
@@ -308,8 +307,8 @@ class DualRecorder:
             sys_target = pad_front(sys_target, int(round((sys_start - t0_ref) * target_rate)))
             mic_target = pad_front(mic_target, int(round((mic_start - t0_ref) * target_rate)))
 
-        # --- Ajuste fino opcional por correlación cruzada (fuga del altavoz
-        # captada por el micrófono). Se ignora si no es fiable. ---
+        # --- Optional fine adjustment by cross-correlation (speaker leak
+        # picked up by the microphone). Ignored if not reliable. ---
         if fine_sync:
             shift = estimate_fine_shift(sys_target, mic_target, target_rate)
             if shift != 0:
@@ -322,7 +321,7 @@ class DualRecorder:
         return mixed, target_rate, sys_out, mic_out
 
     def close(self):
-        # Idempotente: evitar un segundo terminate() sobre PortAudio ya cerrado.
+        # Idempotent: avoid a second terminate() on an already-closed PortAudio.
         if self._closed:
             return
         self._closed = True

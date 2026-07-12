@@ -1,5 +1,5 @@
-"""Paleta de colores y widgets del tema oscuro: botones, LED de estado,
-visualizador de audio, barra de progreso y ayudantes de construcción."""
+"""Color palette and dark-theme widgets: buttons, status LED, audio
+visualizer, progress bar and construction helpers."""
 
 import math
 import random
@@ -7,20 +7,20 @@ import tkinter as tk
 
 
 class P:
-    BG = "#0a0e13"          # fondo general
-    PANEL = "#0f151d"       # paneles / secciones
-    PANEL2 = "#121a24"      # paneles elevados
-    FIELD = "#0b1017"       # campos de texto
-    BORDER = "#1f2d3b"      # bordes finos
-    GRID = "#14202c"        # rejilla del visualizador
-    TEXT = "#d6e3ee"        # texto principal
-    DIM = "#5d7183"         # texto secundario
-    ACCENT = "#00e5ff"      # cian neón (identidad)
-    ACCENT_DK = "#073a44"   # cian apagado (fondos de botón)
-    GREEN = "#2be8a6"       # ok / listo
-    RED = "#ff3860"         # grabando / peligro
+    BG = "#0a0e13"          # general background
+    PANEL = "#0f151d"       # panels / sections
+    PANEL2 = "#121a24"      # raised panels
+    FIELD = "#0b1017"       # text fields
+    BORDER = "#1f2d3b"      # thin borders
+    GRID = "#14202c"        # visualizer grid
+    TEXT = "#d6e3ee"        # primary text
+    DIM = "#5d7183"         # secondary text
+    ACCENT = "#00e5ff"      # neon cyan (identity)
+    ACCENT_DK = "#073a44"   # dim cyan (button backgrounds)
+    GREEN = "#2be8a6"       # ok / ready
+    RED = "#ff3860"         # recording / danger
     RED_DK = "#4a1220"
-    AMBER = "#ffb454"       # procesando / aviso
+    AMBER = "#ffb454"       # processing / warning
 
     FONT = ("Segoe UI", 9)
     FONT_SM = ("Segoe UI", 8)
@@ -31,7 +31,7 @@ class P:
 
 
 def blend(c1: str, c2: str, t: float) -> str:
-    """Interpola dos colores hex '#rrggbb' (t=0 -> c1, t=1 -> c2)."""
+    """Interpolate two hex colors '#rrggbb' (t=0 -> c1, t=1 -> c2)."""
     t = min(max(t, 0.0), 1.0)
     a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
     b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
@@ -39,8 +39,8 @@ def blend(c1: str, c2: str, t: float) -> str:
 
 
 class TechButton(tk.Button):
-    """Botón plano estilo consola con efecto hover. kind: 'primary' (cian),
-    'danger' (rojo), 'ghost' (transparente con borde)."""
+    """Flat console-style button with hover effect. kind: 'primary' (cyan),
+    'danger' (red), 'ghost' (transparent with border)."""
 
     KINDS = {
         "primary": (P.ACCENT_DK, P.ACCENT, "#0a5666"),
@@ -66,8 +66,8 @@ class TechButton(tk.Button):
 
 
 class StatusLED(tk.Canvas):
-    """LED circular con pulso animado. Estados: idle (gris), ready (verde),
-    watching (cian), recording (rojo), busy (ámbar)."""
+    """Circular LED with an animated pulse. States: idle (gray), ready (green),
+    watching (cyan), recording (red), busy (amber)."""
 
     COLORS = {
         "idle": ("#3a4a5a", False),
@@ -101,17 +101,17 @@ class StatusLED(tk.Canvas):
 
 
 class AudioVisualizer(tk.Canvas):
-    """Osciloscopio de barras desplazándose de derecha a izquierda. Mientras se
-    graba, la altura de las barras viene de los niveles RMS reales (sistema y
-    micrófono); en reposo dibuja una onda de escaneo tenue."""
+    """Bar oscilloscope scrolling right to left. While recording, the bar
+    heights come from the real RMS levels (system and microphone); at rest it
+    draws a faint scanning wave."""
 
     def __init__(self, master, height=88, **kw):
         super().__init__(master, height=height, bg=P.PANEL,
                          highlightthickness=1, highlightbackground=P.BORDER, **kw)
         self.h = height
         self.recording = False
-        self.level_source = None  # callable -> (sys_level, mic_level) en 0..1
-        self._history = []        # (nivel_sys, nivel_mic) por columna
+        self.level_source = None  # callable -> (sys_level, mic_level) in 0..1
+        self._history = []        # (sys_level, mic_level) per column
         self._phase = 0.0
         self._bar_w = 3
         self._gap = 2
@@ -127,12 +127,12 @@ class AudioVisualizer(tk.Canvas):
 
         if self.recording and self.level_source:
             s, m = self.level_source()
-            # escala perceptual + un poco de vida (jitter)
+            # perceptual scaling + a bit of life (jitter)
             s = min(math.sqrt(max(s, 0.0)) * 1.6, 1.0) * (0.85 + 0.3 * random.random())
             m = min(math.sqrt(max(m, 0.0)) * 1.6, 1.0) * (0.85 + 0.3 * random.random())
             self._history.append((min(s, 1.0), min(m, 1.0)))
         else:
-            # onda idle: respiración suave con doble seno
+            # idle wave: soft breathing with a double sine
             t = self._phase
             v = 0.06 + 0.045 * (math.sin(t) * math.sin(t * 0.37) + 1) / 2
             self._history.append((v, v * 0.7))
@@ -140,7 +140,7 @@ class AudioVisualizer(tk.Canvas):
 
         self.delete("all")
         cy = self.h // 2
-        # rejilla
+        # grid
         self.create_line(0, cy, w, cy, fill=P.GRID)
         for gx in range(0, w, 60):
             self.create_line(gx, 0, gx, self.h, fill=P.GRID)
@@ -149,8 +149,8 @@ class AudioVisualizer(tk.Canvas):
         max_h = self.h // 2 - 6
         for s, m in self._history:
             if self.recording:
-                # sistema (cian a magenta según intensidad) hacia arriba,
-                # micrófono (verde) hacia abajo
+                # system (cyan to magenta by intensity) upward,
+                # microphone (green) downward
                 hs = max(int(s * max_h), 1)
                 hm = max(int(m * max_h), 1)
                 cs = blend(P.ACCENT, P.RED, s * s)
@@ -164,7 +164,7 @@ class AudioVisualizer(tk.Canvas):
             x += self._bar_w + self._gap
 
         if self.recording:
-            # leyenda mínima
+            # minimal legend
             self.create_text(8, 10, text="SYS", anchor="w", fill=P.ACCENT, font=("Consolas", 8))
             self.create_text(8, self.h - 10, text="MIC", anchor="w", fill=P.GREEN, font=("Consolas", 8))
 
@@ -172,8 +172,8 @@ class AudioVisualizer(tk.Canvas):
 
 
 class TechProgress(tk.Canvas):
-    """Barra de progreso: determinada (fracción 0..1) o indeterminada (banda
-    de escaneo animada)."""
+    """Progress bar: determinate (fraction 0..1) or indeterminate (animated
+    scanning band)."""
 
     def __init__(self, master, height=6, **kw):
         super().__init__(master, height=height, bg=P.FIELD,
@@ -184,7 +184,7 @@ class TechProgress(tk.Canvas):
         self._animate()
 
     def set(self, value):
-        # None -> indeterminada (-2); [0..1] -> determinada. hide() la oculta (-1).
+        # None -> indeterminate (-2); [0..1] -> determinate. hide() hides it (-1).
         self._value = -2.0 if value is None else float(value)
 
     def hide(self):
@@ -205,8 +205,8 @@ class TechProgress(tk.Canvas):
 
 
 def make_section(parent, title):
-    """Crea una sección estilo panel con cabecera y devuelve (frame exterior,
-    frame interior donde colocar los widgets)."""
+    """Creates a panel-style section with a header and returns (outer frame,
+    inner frame where the widgets go)."""
     outer = tk.Frame(parent, bg=P.PANEL, highlightthickness=1,
                      highlightbackground=P.BORDER)
     outer.pack(fill="x", padx=10, pady=(8, 0))
