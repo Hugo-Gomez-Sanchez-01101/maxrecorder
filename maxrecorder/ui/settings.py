@@ -33,6 +33,22 @@ class SettingsWindow(tk.Toplevel):
                  font=("Consolas", 12, "bold"), anchor="w").pack(
             fill="x", padx=12, pady=(10, 0))
 
+        # ---- Appearance ----
+        _, appearance = make_section(self, "Appearance")
+        row_theme = tk.Frame(appearance, bg=P.PANEL)
+        row_theme.pack(fill="x", pady=2)
+        dark_label(row_theme, text="Theme:").pack(side="left", padx=(2, 8))
+        # The active theme gets the 'primary' (accent) button.
+        TechButton(row_theme, text="DARK",
+                   kind="primary" if app.theme_name == "dark" else "ghost",
+                   command=lambda: self._set_theme("dark"), width=10).pack(side="left", padx=(0, 6))
+        TechButton(row_theme, text="TE FIELD",
+                   kind="primary" if app.theme_name == "te" else "ghost",
+                   command=lambda: self._set_theme("te"), width=10).pack(side="left")
+        dark_label(row_theme, dim=True,
+                   text="(TE FIELD: light Teenage Engineering inspired look)").pack(
+            side="left", padx=10)
+
         # ---- Folders ----
         _, folders = make_section(self, "Folders")
         row_rec = tk.Frame(folders, bg=P.PANEL)
@@ -94,6 +110,16 @@ class SettingsWindow(tk.Toplevel):
         btns.pack(fill="x", padx=12, pady=10)
         TechButton(btns, kind="primary", text="SAVE AND CLOSE",
                    command=self._save_close).pack(side="right")
+
+    def _set_theme(self, name):
+        """Applies the theme to the main window and reopens this window so it
+        picks up the new palette too."""
+        if name == self.app.theme_name:
+            return
+        self.destroy()
+        self.app.settings_window = None
+        self.app._apply_theme(name)
+        self.app._open_settings()
 
     def _choose_record_dir(self):
         d = filedialog.askdirectory(

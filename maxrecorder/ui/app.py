@@ -21,7 +21,8 @@ from ..transcription import (WHISPER_AVAILABLE, Transcriber,
                              format_ts, transcript_txt_path)
 from .popup import MeetingPopup
 from .settings import SettingsWindow
-from .theme import (P, TechButton, StatusLED, AudioVisualizer, TechProgress,
+from .theme import (P, set_theme, DEFAULT_THEME, TechButton, StatusLED,
+                    AudioVisualizer, TechProgress,
                     make_section, dark_entry, dark_check, dark_label)
 
 try:
@@ -49,6 +50,13 @@ LABEL_THEM = "Them"
 class App(tk.Tk):
     def __init__(self, start_in_tray=False):
         super().__init__()
+        # Load the config (and with it the theme) BEFORE building any widget:
+        # colors are read from P at construction time.
+        cfg = load_config()
+        self.theme_name = cfg.get("theme", DEFAULT_THEME)
+        set_theme(self.theme_name)
+        self.theme_name = P.NAME  # normalized if the value was unknown
+
         self.title("Max Recorder — Teams meeting transcription")
         self.geometry("920x640")
         self.minsize(760, 520)
@@ -82,7 +90,6 @@ class App(tk.Tk):
         # they are deleted when the app closes.
         self._temp_dir = None
 
-        cfg = load_config()
         self.record_dir = tk.StringVar(value=cfg.get("record_dir", RECORD_DIR_DEFAULT))
         self.transcript_dir = tk.StringVar(value=cfg.get("transcript_dir", TRANSCRIPT_DIR_DEFAULT))
         # Meeting detection is always on: it starts by itself when the app
@@ -509,10 +516,62 @@ class App(tk.Tk):
             "transcript_dir": self.transcript_dir.get().strip(),
             "keywords": self.keywords_var.get(),
             "poll_interval": poll,
+            "theme": self.theme_name,
         })
         if self.meeting_watcher:
             self.meeting_watcher.update_keywords(self.keywords_var.get().split(","))
             self.meeting_watcher.poll_interval = poll
+
+    # ---------------- Theme ----------------
+
+    def _apply_theme(self, name):
+        """Switches the color theme and rebuilds the UI in place, preserving
+        the current state (transcript text, mic list, recording status)."""
+        if name == self.theme_name:
+            return
+        set_theme(name)
+        self.theme_name = P.NAME
+
+        # Preserve state that lives in widgets.
+        transcript = self.txt_transcript.get("1.0", "end-1c")
+        mic_values = list(self.mic_combo["values"])
+        mic_index = self.mic_combo.current()
+        model = self.whisper_model_combo.get()
+        lang = self.lang_entry.get()
+        tr_status = self.lbl_tr_status.cget("text")
+
+        # Tear down and rebuild every widget with the new palette. Toplevels
+        # (settings window, popups) are managed by their own code.
+        for child in list(self.winfo_children()):
+            if isinstance(child, tk.Toplevel):
+                continue
+            child.destroy()
+        self.configure(bg=P.BG)
+        self._setup_style()
+        self._build_ui()
+
+        # Restore state.
+        self.mic_combo["values"] = mic_values
+        if 0 <= mic_index < len(mic_values):
+            self.mic_combo.current(mic_index)
+        self.whisper_model_combo.set(model)
+        self.lang_entry.delete(0, tk.END)
+        self.lang_entry.insert(0, lang)
+        self.lbl_tr_status.config(text=tr_status)
+        if transcript:
+            self.txt_transcript.insert("1.0", transcript)
+        if self.recording:
+            self.visualizer.recording = True
+            self.btn_start.config(state="disabled")
+            self.btn_stop.config(state="normal")
+            self._set_status("Recording system + microphone", "recording")
+        else:
+            if self.last_paths:
+                self.btn_transcribe.config(state="normal")
+            if self.meeting_watcher and self.meeting_watcher.is_alive():
+                self._set_status("Watching Teams...", "watching")
+
+        self._apply_settings()
 
     # ---------------- Autostart ----------------
 

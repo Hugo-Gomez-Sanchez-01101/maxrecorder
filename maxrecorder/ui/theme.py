@@ -1,26 +1,74 @@
-"""Color palette and dark-theme widgets: buttons, status LED, audio
-visualizer, progress bar and construction helpers."""
+"""Color palettes and themed widgets: buttons, status LED, audio visualizer,
+progress bar and construction helpers.
+
+Two themes are available:
+  - "dark": the original neon-on-dark console look.
+  - "te":   a Teenage Engineering inspired look (warm light gray, black ink,
+            TE orange accents).
+
+`P` is a mutable palette: `set_theme(name)` swaps every color in place. Widgets
+read `P` when they are constructed, so switching themes at runtime requires
+rebuilding the UI (App._apply_theme takes care of that)."""
 
 import math
 import random
 import tkinter as tk
 
 
+THEMES = {
+    "dark": dict(
+        BG="#0a0e13",          # general background
+        PANEL="#0f151d",       # panels / sections
+        PANEL2="#121a24",      # raised panels
+        FIELD="#0b1017",       # text fields
+        BORDER="#1f2d3b",      # thin borders
+        GRID="#14202c",        # visualizer grid
+        TEXT="#d6e3ee",        # primary text
+        DIM="#5d7183",         # secondary text
+        ACCENT="#00e5ff",      # neon cyan (identity)
+        ACCENT_DK="#073a44",   # dim cyan (selections)
+        GREEN="#2be8a6",       # ok / ready
+        RED="#ff3860",         # recording / danger
+        RED_DK="#4a1220",
+        AMBER="#ffb454",       # processing / warning
+        LED_IDLE="#3a4a5a",
+        DISABLED_FG="#3c4b5a",
+        # (bg, fg, hover_bg) per button kind
+        BTN_PRIMARY=("#073a44", "#00e5ff", "#0a5666"),
+        BTN_DANGER=("#4a1220", "#ff8ba3", "#6b1a2e"),
+        BTN_GHOST=("#121a24", "#d6e3ee", "#1a2634"),
+    ),
+    "te": dict(
+        BG="#e6e6e2",          # warm light gray (TE plastic)
+        PANEL="#dcdcd8",
+        PANEL2="#d2d2ce",
+        FIELD="#f5f5f2",       # near-white fields
+        BORDER="#b9b9b4",
+        GRID="#cfcfca",
+        TEXT="#141414",        # black ink
+        DIM="#8b8b86",
+        ACCENT="#ff4b00",      # TE orange
+        ACCENT_DK="#ffd2bd",   # pale orange (selections)
+        GREEN="#00a353",
+        RED="#e03616",
+        RED_DK="#f3c1b5",
+        AMBER="#e89b00",
+        LED_IDLE="#b3b3ae",
+        DISABLED_FG="#a3a39e",
+        BTN_PRIMARY=("#ff4b00", "#ffffff", "#d94000"),
+        BTN_DANGER=("#141414", "#ff6a3d", "#2e2e2c"),
+        BTN_GHOST=("#d2d2ce", "#141414", "#c4c4c0"),
+    ),
+}
+
+DEFAULT_THEME = "dark"
+
+
 class P:
-    BG = "#0a0e13"          # general background
-    PANEL = "#0f151d"       # panels / sections
-    PANEL2 = "#121a24"      # raised panels
-    FIELD = "#0b1017"       # text fields
-    BORDER = "#1f2d3b"      # thin borders
-    GRID = "#14202c"        # visualizer grid
-    TEXT = "#d6e3ee"        # primary text
-    DIM = "#5d7183"         # secondary text
-    ACCENT = "#00e5ff"      # neon cyan (identity)
-    ACCENT_DK = "#073a44"   # dim cyan (button backgrounds)
-    GREEN = "#2be8a6"       # ok / ready
-    RED = "#ff3860"         # recording / danger
-    RED_DK = "#4a1220"
-    AMBER = "#ffb454"       # processing / warning
+    """Mutable palette. Colors are injected by set_theme(); fonts are shared
+    by both themes."""
+
+    NAME = DEFAULT_THEME
 
     FONT = ("Segoe UI", 9)
     FONT_SM = ("Segoe UI", 8)
@@ -28,6 +76,19 @@ class P:
     MONO = ("Consolas", 10)
     MONO_BIG = ("Consolas", 22, "bold")
     TITLE = ("Consolas", 15, "bold")
+
+
+def set_theme(name: str):
+    """Swaps every color in P for the given theme ('dark' or 'te')."""
+    values = THEMES.get(name)
+    if values is None:
+        name, values = DEFAULT_THEME, THEMES[DEFAULT_THEME]
+    for key, value in values.items():
+        setattr(P, key, value)
+    P.NAME = name
+
+
+set_theme(DEFAULT_THEME)
 
 
 def blend(c1: str, c2: str, t: float) -> str:
@@ -38,23 +99,32 @@ def blend(c1: str, c2: str, t: float) -> str:
     return "#%02x%02x%02x" % tuple(int(x + (y - x) * t) for x, y in zip(a, b))
 
 
-class TechButton(tk.Button):
-    """Flat console-style button with hover effect. kind: 'primary' (cyan),
-    'danger' (red), 'ghost' (transparent with border)."""
+def _widget_alive(widget) -> bool:
+    """True if the widget still exists (guards animation loops after the UI is
+    rebuilt on a theme switch)."""
+    try:
+        return bool(widget.winfo_exists())
+    except tk.TclError:
+        return False
 
-    KINDS = {
-        "primary": (P.ACCENT_DK, P.ACCENT, "#0a5666"),
-        "danger": (P.RED_DK, "#ff8ba3", "#6b1a2e"),
-        "ghost": (P.PANEL2, P.TEXT, "#1a2634"),
-    }
+
+class TechButton(tk.Button):
+    """Flat console-style button with hover effect. kind: 'primary' (accent),
+    'danger', 'ghost' (transparent with border). Colors are taken from the
+    active theme at construction time."""
 
     def __init__(self, master, kind="ghost", **kw):
-        bg, fg, hover = self.KINDS.get(kind, self.KINDS["ghost"])
+        kinds = {
+            "primary": P.BTN_PRIMARY,
+            "danger": P.BTN_DANGER,
+            "ghost": P.BTN_GHOST,
+        }
+        bg, fg, hover = kinds.get(kind, kinds["ghost"])
         self._bg, self._hover = bg, hover
         super().__init__(
             master, relief="flat", bd=0, cursor="hand2",
             bg=bg, fg=fg, activebackground=hover, activeforeground=fg,
-            disabledforeground="#3c4b5a", font=P.FONT_BOLD,
+            disabledforeground=P.DISABLED_FG, font=P.FONT_BOLD,
             padx=14, pady=5, highlightthickness=1,
             highlightbackground=P.BORDER, highlightcolor=P.BORDER, **kw)
         self.bind("<Enter>", lambda e: self._set_bg(self._hover))
@@ -67,15 +137,7 @@ class TechButton(tk.Button):
 
 class StatusLED(tk.Canvas):
     """Circular LED with an animated pulse. States: idle (gray), ready (green),
-    watching (cyan), recording (red), busy (amber)."""
-
-    COLORS = {
-        "idle": ("#3a4a5a", False),
-        "ready": (P.GREEN, False),
-        "watching": (P.ACCENT, True),
-        "recording": (P.RED, True),
-        "busy": (P.AMBER, True),
-    }
+    watching (accent), recording (red), busy (amber)."""
 
     def __init__(self, master, size=14, **kw):
         super().__init__(master, width=size, height=size, bg=kw.pop("bg", P.PANEL),
@@ -84,14 +146,24 @@ class StatusLED(tk.Canvas):
         self._state = "idle"
         self._phase = 0.0
         m = 2
-        self._dot = self.create_oval(m, m, size - m, size - m, fill="#3a4a5a", outline="")
+        self._dot = self.create_oval(m, m, size - m, size - m, fill=P.LED_IDLE, outline="")
         self._animate()
 
     def set_state(self, state):
-        self._state = state if state in self.COLORS else "idle"
+        self._state = state
 
     def _animate(self):
-        color, pulse = self.COLORS[self._state]
+        if not _widget_alive(self):
+            return
+        # Read from P at runtime so the pulse always uses the active theme.
+        colors = {
+            "idle": (P.LED_IDLE, False),
+            "ready": (P.GREEN, False),
+            "watching": (P.ACCENT, True),
+            "recording": (P.RED, True),
+            "busy": (P.AMBER, True),
+        }
+        color, pulse = colors.get(self._state, colors["idle"])
         if pulse:
             self._phase += 0.18
             t = (math.sin(self._phase) + 1) / 2  # 0..1
@@ -122,6 +194,8 @@ class AudioVisualizer(tk.Canvas):
         return max(w // (self._bar_w + self._gap), 10), w
 
     def _animate(self):
+        if not _widget_alive(self):
+            return
         ncols, w = self._columns()
         self._phase += 0.12
 
@@ -149,7 +223,7 @@ class AudioVisualizer(tk.Canvas):
         max_h = self.h // 2 - 6
         for s, m in self._history:
             if self.recording:
-                # system (cyan to magenta by intensity) upward,
+                # system (accent to red by intensity) upward,
                 # microphone (green) downward
                 hs = max(int(s * max_h), 1)
                 hm = max(int(m * max_h), 1)
@@ -191,6 +265,8 @@ class TechProgress(tk.Canvas):
         self._value = -1.0
 
     def _animate(self):
+        if not _widget_alive(self):
+            return
         self.delete("all")
         w = max(self.winfo_width(), 10)
         if self._value >= 0:

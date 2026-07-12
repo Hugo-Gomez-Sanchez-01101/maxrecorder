@@ -88,8 +88,9 @@ menu: Open / Start recording / Stop recording / Quit.
 
 ### Settings
 
-The "Settings" button (top right) opens the configuration window: recordings and
-transcripts folders, poll interval, fallback keywords, automatic startup with
+The "Settings" button (top right) opens the configuration window: theme
+(dark or a light Teenage Engineering inspired look, switchable live), recordings
+and transcripts folders, poll interval, fallback keywords, automatic startup with
 Windows, and testing the notification.
 
 ## Project structure
