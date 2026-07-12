@@ -9,17 +9,18 @@ Microsoft Teams meeting recorder for **Windows**, with local transcription.
    mix already synchronized.
 2. **Transcribes** locally with faster-whisper (nothing leaves your machine):
    - "You / Them" mode: labels who is speaking by separating the two tracks (kept
-     in a temporary folder only while they are needed).
+     in a temporary folder only while they are needed). Labels follow the
+     transcription language ("Yo"/"Ellos" when the language is es).
    - Timestamps per line and streaming text with a progress bar.
    - Optional automatic transcription when the recording stops.
    - "File..." button to transcribe any standalone audio file (wav, mp3, m4a...).
 3. **Detects meetings** in Teams (always on): when you join a call, it shows a
    notification with Record / Dismiss buttons. With the "Background" button the
    app hides in the system tray and keeps watching.
-4. **Start with Windows** optionally (in the background), configurable in Settings.
-
-Summarizing the transcripts is not done by this app: it is generated separately by
-a scheduled Claude task over the saved `.txt` files.
+4. **AI summary to a Notion calendar** (optional): the "AI SUMMARY" button next
+   to the transcript summarizes it with Mistral (through NVIDIA's free API) and
+   creates a page with the summary in your Notion calendar on the meeting date.
+5. **Start with Windows** optionally (in the background), configurable in Settings.
 
 ## Generated files
 
@@ -90,8 +91,30 @@ menu: Open / Start recording / Stop recording / Quit.
 
 The "Settings" button (top right) opens the configuration window: theme
 (dark or a light Teenage Engineering inspired look, switchable live), recordings
-and transcripts folders, poll interval, fallback keywords, automatic startup with
-Windows, and testing the notification.
+and transcripts folders, the AI summary integration, poll interval, fallback
+keywords, automatic startup with Windows, and testing the notification.
+
+### AI summary to Notion (optional)
+
+Enable it in Settings and fill in three fields (each has a "?" button with
+step-by-step instructions):
+
+- **Mistral API key**: free at https://build.nvidia.com/mistralai/mistral-medium-3.5-128b
+  (sign in, generate an API key).
+- **Notion API key**: create a connection at https://app.notion.com/developers/connections,
+  give it access to your workspace, and add it to the page that contains your
+  calendar (page menu ... > Connections).
+- **Notion calendar link**: in Notion, next to the database name choose
+  ... > "Copy link to view" and paste the full link; the app extracts the
+  database ID automatically.
+
+When enabled, an "AI SUMMARY" button appears next to the transcript panel:
+clicking it generates a summary (overview, topics, decisions, action items,
+open questions) and creates a page in the calendar with the meeting title and
+date. The "Test connections" button in Settings verifies the three credentials
+before you use them. Credentials are stored in `config.json` (git-ignored,
+local to your machine); a `.env` file with `NVIDIA_API_KEY`, `NOTION_API_KEY`
+and `NOTION_DATABASE_ID` is also picked up as default values.
 
 ## Project structure
 

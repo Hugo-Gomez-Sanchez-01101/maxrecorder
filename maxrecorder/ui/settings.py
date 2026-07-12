@@ -1,13 +1,16 @@
-"""Settings window: recordings and transcripts folders, and background options
-(meeting detection, keywords, poll interval, startup at login, test the
-notification). Saved to config.json on close."""
+"""Settings window: collapsible sections (appearance, folders, AI summary,
+background) inside a scrollable body. Saved to config.json on close."""
 
+import threading
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import ttk, filedialog, messagebox
 
 from ..autostart import WINREG_AVAILABLE
 from ..detection import PSUTIL_AVAILABLE, WIN32_AVAILABLE
-from .theme import P, TechButton, make_section, dark_entry, dark_check, dark_label
+from ..summary import (REQUESTS_AVAILABLE, extract_notion_database_id,
+                       test_nvidia_key, test_notion_key, test_database)
+from .theme import (P, TechButton, make_collapsible_section,
+                    dark_entry, dark_check, dark_label)
 
 try:
     import pystray  # noqa: F401
@@ -15,6 +18,35 @@ try:
     TRAY_AVAILABLE = True
 except ImportError:
     TRAY_AVAILABLE = False
+
+
+HELP_NOTION_KEY = (
+    "How to get your Notion API key:\n\n"
+    "1. Go to https://app.notion.com/developers/connections\n"
+    "2. Create a new connection (integration): this gives you an access "
+    "token — that is the API key.\n"
+    "3. Give the connection access to the workspace that contains your "
+    "calendar database.\n"
+    "4. In Notion, open the page that contains the calendar, click the ... "
+    "menu (top right) > Connections, and add your integration so it can "
+    "access that page."
+)
+
+HELP_NVIDIA_KEY = (
+    "How to get your Mistral API key (free, via NVIDIA):\n\n"
+    "1. Go to https://build.nvidia.com/mistralai/mistral-medium-3.5-128b\n"
+    "2. Sign in (create a free account if needed).\n"
+    "3. Generate an API key and copy it here."
+)
+
+HELP_NOTION_DB = (
+    "How to get your Notion calendar link:\n\n"
+    "1. In Notion, next to the calendar database name, click the ... menu.\n"
+    "2. Choose 'Copy link to view'.\n"
+    "3. Paste the full link here (e.g. https://www.notion.so/3726c2...?v=...).\n\n"
+    "The app extracts the database ID from the link automatically when you "
+    "save. You can also paste the 32-character ID directly."
+)
 
 
 class SettingsWindow(tk.Toplevel):
@@ -26,15 +58,36 @@ class SettingsWindow(tk.Toplevel):
         self.configure(bg=P.BG)
         self.resizable(False, False)
         self.transient(app)
-        self.geometry(f"+{app.winfo_rootx() + 90}+{app.winfo_rooty() + 70}")
+        self.geometry(f"+{app.winfo_rootx() + 90}+{app.winfo_rooty() + 40}")
         self.protocol("WM_DELETE_WINDOW", self._save_close)
 
         tk.Label(self, text="SETTINGS", bg=P.BG, fg=P.ACCENT,
                  font=("Consolas", 12, "bold"), anchor="w").pack(
             fill="x", padx=12, pady=(10, 0))
 
+        # ---- Scrollable body (sections are collapsed by default) ----
+        container = tk.Frame(self, bg=P.BG)
+        container.pack(fill="both", expand=True)
+        self._canvas = tk.Canvas(container, bg=P.BG, highlightthickness=0,
+                                 width=680, height=420)
+        scrollbar = ttk.Scrollbar(container, orient="vertical",
+                                  command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self._canvas.pack(side="left", fill="both", expand=True)
+        body = tk.Frame(self._canvas, bg=P.BG)
+        body_window = self._canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>",
+                  lambda e: self._canvas.configure(scrollregion=self._canvas.bbox("all")))
+        self._canvas.bind("<Configure>",
+                          lambda e: self._canvas.itemconfigure(body_window, width=e.width))
+        # The toplevel is in every child's bindtags, so this catches the wheel
+        # anywhere inside this window without leaking to the main window.
+        self.bind("<MouseWheel>",
+                  lambda e: self._canvas.yview_scroll(int(-e.delta / 120), "units"))
+
         # ---- Appearance ----
-        _, appearance = make_section(self, "Appearance")
+        _, appearance = make_collapsible_section(body, "Appearance")
         row_theme = tk.Frame(appearance, bg=P.PANEL)
         row_theme.pack(fill="x", pady=2)
         dark_label(row_theme, text="Theme:").pack(side="left", padx=(2, 8))
@@ -50,7 +103,7 @@ class SettingsWindow(tk.Toplevel):
             side="left", padx=10)
 
         # ---- Folders ----
-        _, folders = make_section(self, "Folders")
+        _, folders = make_collapsible_section(body, "Folders")
         row_rec = tk.Frame(folders, bg=P.PANEL)
         row_rec.pack(fill="x", pady=2)
         dark_label(row_rec, text="Recordings:").pack(side="left", padx=(2, 4))
@@ -65,8 +118,35 @@ class SettingsWindow(tk.Toplevel):
             side="left", padx=4, fill="x", expand=True, ipady=3)
         TechButton(row_tr, text="CHOOSE...", command=self._choose_transcript_dir).pack(side="left", padx=4)
 
+        # ---- AI summary -> Notion ----
+        _, ai = make_collapsible_section(body, "AI summary · Notion calendar")
+        row_en = tk.Frame(ai, bg=P.PANEL)
+        row_en.pack(fill="x", pady=2)
+        dark_check(row_en,
+                   text="Enable the AI SUMMARY button (summarize and publish to a Notion calendar)",
+                   variable=app.notion_enabled_var).pack(side="left")
+
+        self._credential_row(ai, "Mistral API key (NVIDIA):", app.nvidia_key_var,
+                             "Mistral API key", HELP_NVIDIA_KEY, secret=True)
+        self._credential_row(ai, "Notion API key:", app.notion_key_var,
+                             "Notion API key", HELP_NOTION_KEY, secret=True)
+        self._credential_row(ai, "Notion calendar link or ID:", app.notion_db_var,
+                             "Notion calendar", HELP_NOTION_DB, secret=False)
+
+        row_test = tk.Frame(ai, bg=P.PANEL)
+        row_test.pack(fill="x", pady=(4, 2))
+        self._btn_test = TechButton(row_test, text="TEST CONNECTIONS",
+                                    command=self._test_ai)
+        self._btn_test.pack(side="left", padx=2)
+        self.lbl_test = dark_label(row_test, dim=True, text="")
+        self.lbl_test.pack(side="left", padx=8)
+
+        if not REQUESTS_AVAILABLE:
+            tk.Label(ai, text="Missing dependency for this feature: pip install requests",
+                     bg=P.PANEL, fg=P.AMBER, font=P.FONT_SM, anchor="w").pack(fill="x")
+
         # ---- Background ----
-        _, bg_sec = make_section(self, "Background · Meeting detection")
+        _, bg_sec = make_collapsible_section(body, "Background · Meeting detection")
         row1 = tk.Frame(bg_sec, bg=P.PANEL)
         row1.pack(fill="x", pady=2)
         dark_check(row1, text="Automatically detect meetings and notify (always on)",
@@ -110,6 +190,57 @@ class SettingsWindow(tk.Toplevel):
         btns.pack(fill="x", padx=12, pady=10)
         TechButton(btns, kind="primary", text="SAVE AND CLOSE",
                    command=self._save_close).pack(side="right")
+
+    def _credential_row(self, parent, label, variable, help_title, help_text, secret):
+        """Row with label + entry + '?' help button. Secret entries are masked."""
+        row = tk.Frame(parent, bg=P.PANEL)
+        row.pack(fill="x", pady=2)
+        dark_label(row, text=label, width=24, anchor="w").pack(side="left", padx=(2, 4))
+        kw = {"show": "•"} if secret else {}
+        dark_entry(row, textvariable=variable, **kw).pack(
+            side="left", padx=4, fill="x", expand=True, ipady=3)
+        TechButton(row, text="?", width=2,
+                   command=lambda: messagebox.showinfo(help_title, help_text, parent=self)
+                   ).pack(side="left", padx=4)
+
+    def _test_ai(self):
+        """Checks the three AI-summary credentials (Mistral key, Notion key and
+        calendar access) and reports each one."""
+        nvidia_key = self.app.nvidia_key_var.get().strip()
+        notion_key = self.app.notion_key_var.get().strip()
+        db_id = extract_notion_database_id(self.app.notion_db_var.get())
+        self._btn_test.config(state="disabled")
+        self.lbl_test.config(text="Testing...")
+
+        def worker():
+            parts = []
+            try:
+                test_nvidia_key(nvidia_key)
+                parts.append("Mistral ✓")
+            except Exception as e:
+                parts.append(f"Mistral ✗ ({str(e)[:40]})")
+            try:
+                test_notion_key(notion_key)
+                parts.append("Notion key ✓")
+            except Exception as e:
+                parts.append(f"Notion key ✗ ({str(e)[:40]})")
+            try:
+                test_database(notion_key, db_id)
+                parts.append("Calendar ✓")
+            except Exception as e:
+                parts.append(f"Calendar ✗ ({str(e)[:60]})")
+            result = "  ·  ".join(parts)
+
+            def show():
+                try:
+                    if self.winfo_exists():
+                        self.lbl_test.config(text=result)
+                        self._btn_test.config(state="normal")
+                except tk.TclError:
+                    pass
+            self.app.after(0, show)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _set_theme(self, name):
         """Applies the theme to the main window and reopens this window so it

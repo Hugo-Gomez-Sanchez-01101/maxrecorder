@@ -6,7 +6,7 @@ import tempfile
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from datetime import datetime
+from datetime import datetime, date
 
 from ..audio import pyaudio, DualRecorder, save_wav_mono
 from ..autostart import (WINREG_AVAILABLE, is_autostart_enabled,
@@ -14,9 +14,11 @@ from ..autostart import (WINREG_AVAILABLE, is_autostart_enabled,
                          refresh_autostart_if_enabled)
 from ..config import (RECORD_DIR_DEFAULT, TRANSCRIPT_DIR_DEFAULT,
                       DEFAULT_MEETING_KEYWORDS, DEFAULT_TRANSCRIPT_PREFIX,
-                      load_config, save_config)
+                      load_config, save_config, load_dotenv_vars)
 from ..detection import (PSUTIL_AVAILABLE, WIN32_AVAILABLE,
                          MeetingWatcher, detect_meeting_prefix)
+from ..summary import (extract_notion_database_id, summarize,
+                       publish_to_notion)
 from ..transcription import (WHISPER_AVAILABLE, Transcriber,
                              format_ts, transcript_txt_path)
 from .popup import MeetingPopup
@@ -42,9 +44,17 @@ except ImportError:
 
 ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.ico")
 
-# Speaker labels used in the "You / Them" mode.
-LABEL_ME = "You"
-LABEL_THEM = "Them"
+
+def speaker_labels(language):
+    """Speaker labels for the "You / Them" mode, in the transcription language
+    (Spanish meetings get Yo/Ellos; anything else gets You/Them)."""
+    if (language or "").strip().lower().startswith("es"):
+        return "Yo", "Ellos"
+    return "You", "Them"
+
+
+# Any of these labels the microphone track (colors the "me" tag in the panel).
+LABELS_ME = ("You", "Yo")
 
 
 class App(tk.Tk):
@@ -108,6 +118,17 @@ class App(tk.Tk):
         self.speakers_var = tk.BooleanVar(value=True)     # You/Them mode
         self.timestamps_var = tk.BooleanVar(value=True)   # timestamps
         self.auto_transcribe_var = tk.BooleanVar(value=True)
+
+        # AI summary -> Notion (optional). An existing .env in the project root
+        # provides default credentials the first time.
+        env = load_dotenv_vars()
+        self.notion_enabled_var = tk.BooleanVar(value=bool(cfg.get("notion_enabled", False)))
+        self.nvidia_key_var = tk.StringVar(
+            value=cfg.get("nvidia_api_key") or env.get("NVIDIA_API_KEY", ""))
+        self.notion_key_var = tk.StringVar(
+            value=cfg.get("notion_api_key") or env.get("NOTION_API_KEY", ""))
+        self.notion_db_var = tk.StringVar(
+            value=cfg.get("notion_database_id") or env.get("NOTION_DATABASE_ID", ""))
 
         # If autostart is enabled but the project folder was moved/renamed, the
         # registry entry points to a dead path; it is fixed here automatically.
@@ -257,6 +278,12 @@ class App(tk.Tk):
         self.btn_transcribe.pack(side="left", padx=2)
         TechButton(ctr2, text="FILE...", command=self._transcribe_file).pack(side="left", padx=6)
         TechButton(ctr2, text="SAVE .TXT", command=self._save_transcript).pack(side="left", padx=6)
+        # AI summary button, top-right of the transcript box. Only shown when
+        # the feature is enabled in Settings (toggled from _apply_settings).
+        self.btn_summary = TechButton(ctr2, kind="primary", text="✦ AI SUMMARY → NOTION",
+                                      command=self._summarize_to_notion)
+        if self.notion_enabled_var.get():
+            self.btn_summary.pack(side="right", padx=2)
         self.lbl_tr_status = dark_label(ctr2, dim=True, text="")
         self.lbl_tr_status.pack(side="left", padx=10)
 
@@ -511,16 +538,32 @@ class App(tk.Tk):
         except (tk.TclError, ValueError):
             poll = 4
         self.poll_interval_var.set(poll)
+        # If the user pasted a full Notion link, normalize it to the bare
+        # database ID (the one in the URL path, not the 'v' view parameter).
+        db_id = extract_notion_database_id(self.notion_db_var.get())
+        if db_id:
+            self.notion_db_var.set(db_id)
         save_config({
             "record_dir": self.record_dir.get().strip(),
             "transcript_dir": self.transcript_dir.get().strip(),
             "keywords": self.keywords_var.get(),
             "poll_interval": poll,
             "theme": self.theme_name,
+            "notion_enabled": self.notion_enabled_var.get(),
+            "nvidia_api_key": self.nvidia_key_var.get().strip(),
+            "notion_api_key": self.notion_key_var.get().strip(),
+            "notion_database_id": self.notion_db_var.get().strip(),
         })
         if self.meeting_watcher:
             self.meeting_watcher.update_keywords(self.keywords_var.get().split(","))
             self.meeting_watcher.poll_interval = poll
+        # The AI summary button follows the feature toggle.
+        if hasattr(self, "btn_summary"):
+            if self.notion_enabled_var.get():
+                if not self.btn_summary.winfo_ismapped():
+                    self.btn_summary.pack(side="right", padx=2)
+            else:
+                self.btn_summary.pack_forget()
 
     # ---------------- Theme ----------------
 
@@ -694,7 +737,13 @@ class App(tk.Tk):
         if self.speakers_var.get():
             sys_p, mic_p = self.last_paths.get("sys"), self.last_paths.get("mic")
             if sys_p and mic_p and os.path.exists(sys_p) and os.path.exists(mic_p):
-                jobs = [(LABEL_THEM, sys_p), (LABEL_ME, mic_p)]
+                label_me, label_them = speaker_labels(self.lang_entry.get())
+                jobs = [(label_them, sys_p), (label_me, mic_p)]
+            else:
+                # Surfaces the reason instead of silently dropping the labels
+                # (the separate tracks live in a temp folder per session).
+                self.lbl_tr_status.config(
+                    text="Speaker tracks unavailable; transcribing the mix")
         if jobs is None:
             jobs = [(None, self.last_paths["mixed"])]
 
@@ -781,12 +830,59 @@ class App(tk.Tk):
         if self.timestamps_var.get():
             self.txt_transcript.insert(tk.END, f"[{format_ts(start)}] ", "ts")
         if label:
-            tag = "me" if label == LABEL_ME else "them"
+            tag = "me" if label in LABELS_ME else "them"
             self.txt_transcript.insert(tk.END, f"{label}: ", tag)
         self.txt_transcript.insert(tk.END, text + "\n")
         self.txt_transcript.see(tk.END)
 
-    def _on_transcribe_done(self, segs, multi, saved_path):
+    def _publish_summary(self, transcript_text):
+        """Summarizes with Mistral (NVIDIA API) and creates the page in the
+        Notion calendar. Runs in a worker thread. Returns a short note for
+        the status line (success or error)."""
+        nvidia_key = self.nvidia_key_var.get().strip()
+        notion_key = self.notion_key_var.get().strip()
+        db_id = extract_notion_database_id(self.notion_db_var.get())
+        if not (nvidia_key and notion_key and db_id):
+            return "Notion: missing credentials (see Settings)"
+        try:
+            self.after(0, lambda: self.lbl_tr_status.config(text="Summarizing with AI..."))
+            summary = summarize(transcript_text, nvidia_key)
+            self.after(0, lambda: self.lbl_tr_status.config(text="Publishing to Notion..."))
+            title = getattr(self, "_meeting_prefix", DEFAULT_TRANSCRIPT_PREFIX).capitalize()
+            publish_to_notion(notion_key, db_id, title, date.today(), summary)
+            return "Published to Notion"
+        except Exception as e:
+            return f"Notion failed: {e}"
+
+    def _summarize_to_notion(self):
+        """AI SUMMARY button: summarizes the transcript currently shown in the
+        panel and publishes it to the Notion calendar."""
+        text = self.txt_transcript.get("1.0", "end-1c").strip()
+        if not text:
+            messagebox.showwarning("Notice", "There is no transcript to summarize.")
+            return
+        if getattr(self, "_summarizing", False):
+            return
+        self._summarizing = True
+        self.btn_summary.config(state="disabled")
+        self._set_status("Summarizing...", "busy")
+
+        def worker():
+            note = self._publish_summary(text)
+
+            def done():
+                self._summarizing = False
+                self.btn_summary.config(state="normal")
+                self.lbl_tr_status.config(text=note)
+                ok = note == "Published to Notion"
+                self._set_status("Summary published to Notion" if ok
+                                 else "Notion publish failed",
+                                 "ready" if ok else "idle")
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_transcribe_done(self, segs, multi, saved_path, note=None):
         # With several tracks the segments arrived interleaved per track;
         # we rewrite the panel already ordered by time.
         if multi:
@@ -798,6 +894,8 @@ class App(tk.Tk):
         msg = f"{n} segments"
         if saved_path:
             msg += f" · saved {os.path.basename(saved_path)}"
+        if note:
+            msg += f" · {note}"
         self.lbl_tr_status.config(text=msg)
         self._set_status("Transcription complete", "ready")
 

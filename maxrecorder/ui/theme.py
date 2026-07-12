@@ -295,6 +295,39 @@ def make_section(parent, title):
     return outer, inner
 
 
+def make_collapsible_section(parent, title, expanded=False):
+    """Like make_section but the body collapses/expands when the header is
+    clicked. Returns (outer frame, inner frame)."""
+    outer = tk.Frame(parent, bg=P.PANEL, highlightthickness=1,
+                     highlightbackground=P.BORDER)
+    outer.pack(fill="x", padx=10, pady=(8, 0))
+    header = tk.Frame(outer, bg=P.PANEL, cursor="hand2")
+    header.pack(fill="x")
+    arrow = tk.Label(header, text="▾" if expanded else "▸", bg=P.PANEL,
+                     fg=P.ACCENT, font=("Consolas", 9, "bold"), cursor="hand2")
+    arrow.pack(side="left", padx=(10, 0), pady=(6, 4))
+    lbl = tk.Label(header, text=" " + title.upper(), bg=P.PANEL, fg=P.ACCENT,
+                   font=("Consolas", 9, "bold"), anchor="w", cursor="hand2")
+    lbl.pack(side="left", pady=(6, 4))
+    inner = tk.Frame(outer, bg=P.PANEL)
+    if expanded:
+        inner.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+    state = {"open": expanded}
+
+    def toggle(_event=None):
+        state["open"] = not state["open"]
+        if state["open"]:
+            inner.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+            arrow.config(text="▾")
+        else:
+            inner.pack_forget()
+            arrow.config(text="▸")
+
+    for w in (header, arrow, lbl):
+        w.bind("<Button-1>", toggle)
+    return outer, inner
+
+
 def dark_entry(parent, **kw):
     return tk.Entry(parent, bg=P.FIELD, fg=P.TEXT, insertbackground=P.ACCENT,
                     relief="flat", highlightthickness=1,

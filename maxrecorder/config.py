@@ -40,3 +40,21 @@ def save_config(cfg: dict):
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     except OSError:
         pass
+
+
+def load_dotenv_vars() -> dict:
+    """Minimal .env reader (KEY=value lines) from the project root. Used only
+    as default values for the AI-summary credentials, so an existing .env
+    keeps working without extra dependencies."""
+    env = {}
+    try:
+        with open(os.path.join(ROOT_DIR, ".env"), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                env[key.strip()] = value.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return env

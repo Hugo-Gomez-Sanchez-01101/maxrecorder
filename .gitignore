@@ -3,4 +3,5 @@ venv/
 crash.log
 config.json
 __pycache__/
-.claude
+.claude/
+resumen_weekly_mistral_notion.py
