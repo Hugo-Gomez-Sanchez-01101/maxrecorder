@@ -3,8 +3,11 @@ without administrator permissions)."""
 
 import os
 import sys
+import logging
 
 from .config import ENTRY_SCRIPT
+
+log = logging.getLogger(__name__)
 
 try:
     import winreg
@@ -64,8 +67,10 @@ def refresh_autostart_if_enabled():
         return False
     try:
         enable_autostart()
+        log.info("Autostart registry entry refreshed (project path changed)")
         return True
     except OSError:
+        log.exception("Could not refresh the autostart registry entry")
         return False
 
 

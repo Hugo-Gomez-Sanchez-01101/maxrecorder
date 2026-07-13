@@ -1,9 +1,12 @@
 """Teams meeting detection: processes, window titles, microphone usage from
 the Windows registry, and the background watcher."""
 
+import logging
 import threading
 
 from .config import DEFAULT_MEETING_KEYWORDS, DEFAULT_TRANSCRIPT_PREFIX, MEETING_NAME_RULES
+
+log = logging.getLogger(__name__)
 
 try:
     import winreg
@@ -178,6 +181,7 @@ class MeetingWatcher(threading.Thread):
         return False
 
     def run(self):
+        log.info("Meeting watcher started (poll=%ss)", self.poll_interval)
         while not self._stop_event.is_set():
             try:
                 mic = self._teams_using_mic()
@@ -190,14 +194,18 @@ class MeetingWatcher(threading.Thread):
                     # (avoids a stale entry if Teams died holding the mic).
                     meeting_now = bool(mic) and bool(teams_pids())
             except Exception:
+                log.exception("Error while polling for meetings")
                 meeting_now = False
 
             if meeting_now and not self._in_meeting:
                 self._in_meeting = True
+                log.info("Meeting started (mic signal=%s)", mic is not None)
                 self.on_meeting_start()
             elif not meeting_now and self._in_meeting:
                 self._in_meeting = False
+                log.info("Meeting ended")
                 if self.on_meeting_end:
                     self.on_meeting_end()
 
             self._stop_event.wait(self.poll_interval)
+        log.info("Meeting watcher stopped")

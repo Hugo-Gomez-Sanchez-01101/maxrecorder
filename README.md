@@ -9,18 +9,23 @@ Microsoft Teams meeting recorder for **Windows**, with local transcription.
    mix already synchronized.
 2. **Transcribes** locally with faster-whisper (nothing leaves your machine):
    - "You / Them" mode: labels who is speaking by separating the two tracks (kept
-     in a temporary folder only while they are needed). Labels follow the
-     transcription language ("Yo"/"Ellos" when the language is es).
+     in a temporary folder only while they are needed, so it applies to the last
+     recording of the session). Labels follow the app language ("Yo"/"Ellos" in
+     Spanish).
    - Timestamps per line and streaming text with a progress bar.
    - Optional automatic transcription when the recording stops.
    - "File..." button to transcribe any standalone audio file (wav, mp3, m4a...).
 3. **Detects meetings** in Teams (always on): when you join a call, it shows a
    notification with Record / Dismiss buttons. With the "Background" button the
    app hides in the system tray and keeps watching.
-4. **AI summary to a Notion calendar** (optional): the "AI SUMMARY" button next
-   to the transcript summarizes it with Mistral (through NVIDIA's free API) and
-   creates a page with the summary in your Notion calendar on the meeting date.
-5. **Start with Windows** optionally (in the background), configurable in Settings.
+4. **English / Spanish**: a Language dropdown in the main window switches every
+   text in the application, the transcription language and the language of the
+   AI summary (live, no restart needed).
+5. **AI summary**: the "AI SUMMARY" button next to the transcript summarizes it
+   with Mistral (through NVIDIA's free API) and shows the summary in Markdown,
+   ready to copy. Optionally it can also publish the summary as a page in a
+   Notion calendar on the meeting date (enabled in Settings).
+6. **Start with Windows** optionally (in the background), configurable in Settings.
 
 ## Generated files
 
@@ -90,17 +95,28 @@ menu: Open / Start recording / Stop recording / Quit.
 ### Settings
 
 The "Settings" button (top right) opens the configuration window: theme
-(dark or a light Teenage Engineering inspired look, switchable live), recordings
+(dark, a light Teenage Engineering inspired look, or Polaroid — switchable
+live), recordings
 and transcripts folders, the AI summary integration, poll interval, fallback
 keywords, automatic startup with Windows, and testing the notification.
 
-### AI summary to Notion (optional)
+### AI summary
 
-Enable it in Settings and fill in three fields (each has a "?" button with
-step-by-step instructions):
+The "AI SUMMARY" button next to the transcript panel generates a summary
+(overview, topics, decisions, action items, open questions) and shows it in a
+window as Markdown with a "Copy" button. It only requires one credential,
+set in Settings > AI summary:
 
 - **Mistral API key**: free at https://build.nvidia.com/mistralai/mistral-medium-3.5-128b
   (sign in, generate an API key).
+
+### Publish the summary to Notion (optional)
+
+If you enable "Also publish the summary to a Notion calendar" in Settings, the
+same button additionally creates a page in the calendar with the meeting title
+and date. It needs two more fields (each has a "?" button with step-by-step
+instructions):
+
 - **Notion API key**: create a connection at https://app.notion.com/developers/connections,
   give it access to your workspace, and add it to the page that contains your
   calendar (page menu ... > Connections).
@@ -108,11 +124,8 @@ step-by-step instructions):
   ... > "Copy link to view" and paste the full link; the app extracts the
   database ID automatically.
 
-When enabled, an "AI SUMMARY" button appears next to the transcript panel:
-clicking it generates a summary (overview, topics, decisions, action items,
-open questions) and creates a page in the calendar with the meeting title and
-date. The "Test connections" button in Settings verifies the three credentials
-before you use them. Credentials are stored in `config.json` (git-ignored,
+The "Test connections" button in Settings verifies the credentials before you
+use them. Credentials are stored in `config.json` (git-ignored,
 local to your machine); a `.env` file with `NVIDIA_API_KEY`, `NOTION_API_KEY`
 and `NOTION_DATABASE_ID` is also picked up as default values.
 
@@ -144,6 +157,8 @@ MaxRecorder/
 
 - If the loopback device is not detected, enable "Stereo Mix" in
   Control Panel > Sound > Recording, or install the VB-Cable virtual driver.
-- If there is an unexpected shutdown, the traceback is logged in `crash.log`.
+- Activity (recordings, transcriptions, detection, errors) is logged to
+  `logs/maxrecorder.log` (rotated at 1 MB, 3 backups kept). If there is an
+  unexpected native crash, the traceback is also written to `crash.log`.
 - `tools/diag_teams.py` lists the Teams windows and the per-app microphone usage,
   useful to verify detection.

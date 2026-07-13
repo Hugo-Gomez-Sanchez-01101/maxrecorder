@@ -6,12 +6,15 @@ database's title and date properties are discovered dynamically so it works
 with any calendar database regardless of the property names."""
 
 import re
+import logging
 
 try:
     import requests
     REQUESTS_AVAILABLE = True
 except ImportError:
     REQUESTS_AVAILABLE = False
+
+log = logging.getLogger(__name__)
 
 
 NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
@@ -22,22 +25,29 @@ NOTION_VERSION = "2022-06-28"
 _NOTION_ID_RE = re.compile(
     r"[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}", re.I)
 
-SUMMARY_PROMPT = """You are an assistant that summarizes work meetings.
-Write the summary in the same language as the transcript, using exactly these
-sections (as Markdown ## headings):
+SUMMARY_LANGUAGES = {"en": "English", "es": "Spanish"}
+
+SUMMARY_PROMPT = """
+You are an assistant that summarizes work recordings (these may be team meetings, solo work sessions, demos, or tests — infer which from the content itself, and reflect that context accurately in the summary rather than assuming a formal team meeting).
+
+Write the summary in {summary_language}, using exactly these sections (as Markdown ## headings):
 
 ## Overview
-(2-4 sentences)
+(2-4 sentences. State what kind of session this actually is — e.g. team meeting, solo recording, test/demo — based on the transcript, not assumed.)
 
 ## Topics discussed
-(key points per topic)
+(Key points per topic. When the speaker enumerates a list of items — e.g. repos, tasks, files — include every item mentioned, even briefly. Do not summarize a long enumeration down to a few examples.)
 
 ## Decisions made
+(Only formal decisions or clear conclusions. If none were made, write "No se tomaron decisiones formales" / "No formal decisions were made" instead of inventing one.)
 
 ## Action items
-(with the owner if mentioned)
+(Concrete follow-up tasks only, with the owner if mentioned. If none, say so explicitly.)
 
 ## Open questions / topics for the next meeting
+(Only include this section's assumptions — like "next meeting" — if the transcript implies recurring meetings. Otherwise phrase as "open questions" without assuming a future meeting.)
+
+Prioritize fidelity to the transcript over fitting the template neatly: it's better to say a section doesn't apply than to force content into it.
 
 Transcript:
 \"\"\"
@@ -65,24 +75,30 @@ def extract_notion_database_id(link_or_id: str):
     return None
 
 
-def summarize(transcript: str, nvidia_api_key: str) -> str:
-    """Summarizes the transcript with Mistral via the NVIDIA API. Returns the
-    summary as Markdown. Raises RuntimeError with a readable message on failure."""
+def summarize(transcript: str, nvidia_api_key: str, language: str = "en") -> str:
+    """Summarizes the transcript with Mistral via the NVIDIA API, writing the
+    summary in the given app language ('en'/'es'). Returns the summary as
+    Markdown. Raises RuntimeError with a readable message on failure."""
     if not REQUESTS_AVAILABLE:
         raise RuntimeError("The 'requests' package is not installed (pip install requests)")
+    summary_language = SUMMARY_LANGUAGES.get(language, "the same language as the transcript")
     headers = {
         "Authorization": f"Bearer {nvidia_api_key}",
         "Accept": "application/json",
     }
     payload = {
         "model": NVIDIA_MODEL,
-        "messages": [{"role": "user", "content": SUMMARY_PROMPT.format(transcript=transcript)}],
+        "reasoning_effort": "none",
+        "messages": [{"role": "user", "content": SUMMARY_PROMPT.format(
+            transcript=transcript, summary_language=summary_language)}],
         "max_tokens": 16384,
         "temperature": 0.3,
         "top_p": 1.0,
         "stream": False,
     }
     try:
+        log.info("Requesting summary from %s (%d chars of transcript)",
+                 NVIDIA_MODEL, len(transcript))
         resp = requests.post(NVIDIA_URL, headers=headers, json=payload, timeout=180)
         resp.raise_for_status()
         data = resp.json()

@@ -1,6 +1,7 @@
 .env
 venv/
 crash.log
+logs/
 config.json
 __pycache__/
 .claude/

@@ -2,6 +2,7 @@
 
 import tkinter as tk
 
+from ..i18n import tr
 from .theme import P, StatusLED, TechButton
 
 
@@ -28,19 +29,19 @@ class MeetingPopup(tk.Toplevel):
         self._led = StatusLED(head, bg=P.PANEL)
         self._led.set_state("recording")
         self._led.pack(side="left", padx=(0, 8))
-        tk.Label(head, text="TEAMS MEETING DETECTED",
+        tk.Label(head, text=tr("TEAMS MEETING DETECTED"),
                  bg=P.PANEL, fg=P.TEXT, font=("Consolas", 10, "bold"),
                  anchor="w").pack(side="left")
 
-        tk.Label(self, text="Do you want to start recording now?",
+        tk.Label(self, text=tr("Do you want to start recording now?"),
                  bg=P.PANEL, fg=P.DIM, font=P.FONT, anchor="w",
                  justify="left").pack(fill="x", padx=14, pady=(2, 10))
 
         btns = tk.Frame(self, bg=P.PANEL)
         btns.pack(padx=14, pady=4, fill="x")
-        TechButton(btns, kind="danger", text="●  RECORD",
+        TechButton(btns, kind="danger", text=tr("●  RECORD"),
                    command=self._accept, width=11).pack(side="left", padx=(0, 8))
-        TechButton(btns, kind="ghost", text="DISMISS",
+        TechButton(btns, kind="ghost", text=tr("DISMISS"),
                    command=self._dismiss, width=11).pack(side="left")
 
         self._slide_in()

@@ -37,6 +37,7 @@ THEMES = {
         BTN_PRIMARY=("#073a44", "#00e5ff", "#0a5666"),
         BTN_DANGER=("#4a1220", "#ff8ba3", "#6b1a2e"),
         BTN_GHOST=("#121a24", "#d6e3ee", "#1a2634"),
+        BTN_SPICY=("#ffcd11", "#141414", "#e6b400"),  # CAT excavator yellow
     ),
     "te": dict(
         BG="#e6e6e2",          # warm light gray (TE plastic)
@@ -50,7 +51,7 @@ THEMES = {
         ACCENT="#ff4b00",      # TE orange
         ACCENT_DK="#ffd2bd",   # pale orange (selections)
         GREEN="#00a353",
-        RED="#e03616",
+        RED="#d71921",
         RED_DK="#f3c1b5",
         AMBER="#e89b00",
         LED_IDLE="#b3b3ae",
@@ -58,6 +59,31 @@ THEMES = {
         BTN_PRIMARY=("#ff4b00", "#ffffff", "#d94000"),
         BTN_DANGER=("#141414", "#ff6a3d", "#2e2e2c"),
         BTN_GHOST=("#d2d2ce", "#141414", "#c4c4c0"),
+        BTN_SPICY=("#d71921", "#ffffff", "#b21419"),  # TE red
+    ),
+    # Polaroid: white frame, black ink and the classic color-spectrum stripe
+    # (#FF0000 #FF8000 #FFD500 #7CDE00 #0099FF).
+    "polaroid": dict(
+        BG="#ffffff",
+        PANEL="#f6f6f6",
+        PANEL2="#ededed",
+        FIELD="#ffffff",
+        BORDER="#d9d9d9",
+        GRID="#ececec",
+        TEXT="#000000",
+        DIM="#7a7a7a",
+        ACCENT="#0099ff",      # spectrum blue (identity)
+        ACCENT_DK="#cce9ff",   # pale blue (selections)
+        GREEN="#7cde00",
+        RED="#ff0000",
+        RED_DK="#ffd6d6",
+        AMBER="#ff8000",
+        LED_IDLE="#c9c9c9",
+        DISABLED_FG="#b5b5b5",
+        BTN_PRIMARY=("#0099ff", "#ffffff", "#007fd4"),
+        BTN_DANGER=("#ff0000", "#ffffff", "#d40000"),
+        BTN_GHOST=("#ededed", "#000000", "#dedede"),
+        BTN_SPICY=("#ffd500", "#000000", "#e6c000"),  # spectrum yellow
     ),
 }
 
@@ -110,14 +136,16 @@ def _widget_alive(widget) -> bool:
 
 class TechButton(tk.Button):
     """Flat console-style button with hover effect. kind: 'primary' (accent),
-    'danger', 'ghost' (transparent with border). Colors are taken from the
-    active theme at construction time."""
+    'danger', 'ghost' (transparent with border), 'spicy' (highlight color:
+    CAT yellow on dark, red on te). Colors are taken from the active theme at
+    construction time."""
 
     def __init__(self, master, kind="ghost", **kw):
         kinds = {
             "primary": P.BTN_PRIMARY,
             "danger": P.BTN_DANGER,
             "ghost": P.BTN_GHOST,
+            "spicy": P.BTN_SPICY,
         }
         bg, fg, hover = kinds.get(kind, kinds["ghost"])
         self._bg, self._hover = bg, hover

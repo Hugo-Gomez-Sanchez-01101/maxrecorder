@@ -44,9 +44,20 @@ def main():
              "(used by autostart at login).")
     args = parser.parse_args()
 
-    from maxrecorder.ui.app import App
-    app = App(start_in_tray=args.tray)
-    app.mainloop()
+    from maxrecorder.logger import setup_logging
+    setup_logging()
+    import logging
+    log = logging.getLogger("maxrecorder")
+    log.info("=== Max Recorder starting (tray=%s) ===", args.tray)
+
+    try:
+        from maxrecorder.ui.app import App
+        app = App(start_in_tray=args.tray)
+        app.mainloop()
+        log.info("=== Max Recorder exited normally ===")
+    except Exception:
+        log.exception("Fatal error, the application is closing")
+        raise
 
 
 if __name__ == "__main__":

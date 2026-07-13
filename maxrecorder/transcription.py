@@ -2,8 +2,13 @@
 streaming and multi-track mode with speaker labels."""
 
 import os
+import logging
 import threading
 from datetime import datetime
+
+from .i18n import tr
+
+log = logging.getLogger(__name__)
 
 try:
     from faster_whisper import WhisperModel
@@ -48,8 +53,10 @@ class Transcriber:
     def get_model(self, model_size: str):
         with self._lock:
             if model_size not in self._models:
+                log.info("Loading Whisper model '%s' (first use, may download)", model_size)
                 self._models[model_size] = WhisperModel(
                     model_size, device="cpu", compute_type="int8")
+                log.info("Whisper model '%s' ready", model_size)
             return self._models[model_size]
 
     def transcribe_jobs(self, jobs, model_size, language=None,
@@ -58,7 +65,7 @@ class Transcriber:
         (start, label, text) ordered by time. Callbacks arrive from this same
         thread (the caller decides how to hop to the UI thread)."""
         if on_phase:
-            on_phase(f"Loading model '{model_size}'...")
+            on_phase(tr("Loading model '{}'...").format(model_size))
         model = self.get_model(model_size)
 
         kwargs = dict(
@@ -77,9 +84,12 @@ class Transcriber:
         for idx, (label, path) in enumerate(jobs):
             if on_phase:
                 name = os.path.basename(path)
-                on_phase(f"Transcribing {name}" + (f" [{label}]" if label else "") + "...")
+                on_phase(tr("Transcribing {}").format(name)
+                         + (f" [{label}]" if label else "") + "...")
             segments, info = model.transcribe(path, **kwargs)
             duration = max(getattr(info, "duration", 0.0) or 0.0, 0.001)
+            log.info("Transcribing %s (label=%s, %.1f min)",
+                     os.path.basename(path), label, duration / 60)
             for seg in segments:
                 text = seg.text.strip()
                 # Discard segments the model itself considers non-speech

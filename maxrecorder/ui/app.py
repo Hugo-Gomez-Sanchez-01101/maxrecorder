@@ -1,7 +1,9 @@
 """Max Recorder main window."""
 
 import os
+import re
 import shutil
+import logging
 import tempfile
 import threading
 import tkinter as tk
@@ -15,6 +17,8 @@ from ..autostart import (WINREG_AVAILABLE, is_autostart_enabled,
 from ..config import (RECORD_DIR_DEFAULT, TRANSCRIPT_DIR_DEFAULT,
                       DEFAULT_MEETING_KEYWORDS, DEFAULT_TRANSCRIPT_PREFIX,
                       load_config, save_config, load_dotenv_vars)
+from ..i18n import (tr, set_language, current_language,
+                    LANG_CODES, LANG_NAMES, DEFAULT_LANGUAGE)
 from ..detection import (PSUTIL_AVAILABLE, WIN32_AVAILABLE,
                          MeetingWatcher, detect_meeting_prefix)
 from ..summary import (extract_notion_database_id, summarize,
@@ -42,12 +46,14 @@ except ImportError:
     WIN32_ICON_AVAILABLE = False
 
 
+log = logging.getLogger(__name__)
+
 ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.ico")
 
 
 def speaker_labels(language):
-    """Speaker labels for the "You / Them" mode, in the transcription language
-    (Spanish meetings get Yo/Ellos; anything else gets You/Them)."""
+    """Speaker labels for the "You / Them" mode, in the app language
+    (Spanish gets Yo/Ellos; anything else gets You/Them)."""
     if (language or "").strip().lower().startswith("es"):
         return "Yo", "Ellos"
     return "You", "Them"
@@ -66,8 +72,10 @@ class App(tk.Tk):
         self.theme_name = cfg.get("theme", DEFAULT_THEME)
         set_theme(self.theme_name)
         self.theme_name = P.NAME  # normalized if the value was unknown
+        # Language (UI + transcription + AI summary), also before building.
+        set_language(cfg.get("language", DEFAULT_LANGUAGE))
 
-        self.title("Max Recorder — Teams meeting transcription")
+        self.title(tr("Max Recorder — Teams meeting transcription"))
         self.geometry("920x640")
         self.minsize(760, 520)
         self.configure(bg=P.BG)
@@ -149,6 +157,15 @@ class App(tk.Tk):
         if start_in_tray:
             self.after(0, self._start_in_tray)
 
+        log.info("App ready (theme=%s, tray=%s, whisper=%s, detection deps=%s)",
+                 self.theme_name, start_in_tray, WHISPER_AVAILABLE,
+                 PSUTIL_AVAILABLE and WIN32_AVAILABLE)
+
+    def report_callback_exception(self, exc, val, tb):
+        """Uncaught exceptions inside Tk callbacks end up here: log them with
+        the full traceback instead of dying silently on pythonw."""
+        log.error("Unhandled UI exception", exc_info=(exc, val, tb))
+
     def _start_in_tray(self):
         if TRAY_AVAILABLE:
             self.withdraw()
@@ -202,16 +219,16 @@ class App(tk.Tk):
         tk.Label(header, text="◉ MAX RECORDER", bg=P.BG, fg=P.ACCENT,
                  font=P.TITLE, anchor="w").pack(side="left")
         # Top-right corner buttons: go to background and open the settings window.
-        TechButton(header, text="▾ BACKGROUND",
+        TechButton(header, text=tr("▾ BACKGROUND"),
                    command=self._minimize_to_tray).pack(side="right")
-        TechButton(header, text="⚙ SETTINGS",
+        TechButton(header, text=tr("⚙ SETTINGS"),
                    command=self._open_settings).pack(side="right", padx=6)
         led_box = tk.Frame(header, bg=P.BG)
         led_box.pack(side="right", padx=(0, 8))
         self.led = StatusLED(led_box, bg=P.BG)
         self.led.set_state("ready")
         self.led.pack(side="left", padx=(0, 6))
-        self.lbl_status = tk.Label(led_box, text="READY", bg=P.BG, fg=P.DIM,
+        self.lbl_status = tk.Label(led_box, text=tr("Ready").upper(), bg=P.BG, fg=P.DIM,
                                    font=("Consolas", 9))
         self.lbl_status.pack(side="left")
 
@@ -221,13 +238,13 @@ class App(tk.Tk):
         self.visualizer.level_source = self._get_levels
 
         # ---- Recording ----
-        _, rec = make_section(self, "Recording")
+        _, rec = make_section(self, tr("Recording"))
         row = tk.Frame(rec, bg=P.PANEL)
         row.pack(fill="x", pady=2)
-        self.btn_start = TechButton(row, kind="primary", text="●  START",
+        self.btn_start = TechButton(row, kind="primary", text=tr("●  START"),
                                     command=self._start_recording, width=13)
         self.btn_start.pack(side="left", padx=(2, 6))
-        self.btn_stop = TechButton(row, kind="danger", text="■  STOP",
+        self.btn_stop = TechButton(row, kind="danger", text=tr("■  STOP"),
                                    command=self._stop_recording, width=13,
                                    state="disabled")
         self.btn_stop.pack(side="left", padx=6)
@@ -240,57 +257,60 @@ class App(tk.Tk):
 
         row2 = tk.Frame(rec, bg=P.PANEL)
         row2.pack(fill="x", pady=(6, 2))
-        dark_label(row2, text="Microphone:").pack(side="left", padx=(2, 4))
+        dark_label(row2, text=tr("Microphone:")).pack(side="left", padx=(2, 4))
         self.mic_combo = ttk.Combobox(row2, state="readonly", width=44)
         self.mic_combo.pack(side="left", padx=4, fill="x", expand=True)
         TechButton(row2, text="⟳", command=self._refresh_mic_list, width=3).pack(side="left", padx=4)
         dark_label(row2, dim=True,
-                   text="(system audio is captured automatically, via WASAPI loopback)").pack(
+                   text=tr("(system audio is captured automatically, via WASAPI loopback)")).pack(
             side="left", padx=6)
 
         # (The recordings folder is configured in the Settings window.)
 
         # ---- Transcription ----
-        outer_tr, tr = make_section(self, "Transcription · faster-whisper (local)")
+        outer_tr, sec_tr = make_section(self, tr("Transcription · faster-whisper (local)"))
         outer_tr.pack_configure(fill="both", expand=True, pady=(8, 10))
 
-        ctr = tk.Frame(tr, bg=P.PANEL)
+        ctr = tk.Frame(sec_tr, bg=P.PANEL)
         ctr.pack(fill="x", pady=2)
-        dark_label(ctr, text="Model:").pack(side="left", padx=(2, 4))
+        dark_label(ctr, text=tr("Model:")).pack(side="left", padx=(2, 4))
         self.whisper_model_combo = ttk.Combobox(
             ctr, state="readonly", width=10,
             values=["tiny", "base", "small", "medium", "large-v3"])
-        self.whisper_model_combo.set("small")
+        self.whisper_model_combo.set("large-v3")
         self.whisper_model_combo.pack(side="left", padx=4)
-        dark_label(ctr, text="Language:").pack(side="left", padx=(10, 4))
-        self.lang_entry = dark_entry(ctr, width=5)
-        self.lang_entry.insert(0, "es")
-        self.lang_entry.pack(side="left", padx=4, ipady=3)
-        dark_check(ctr, text="You / Them", variable=self.speakers_var).pack(side="left", padx=(12, 0))
-        dark_check(ctr, text="Timestamps", variable=self.timestamps_var).pack(side="left", padx=(8, 0))
-        dark_check(ctr, text="Transcribe on stop", variable=self.auto_transcribe_var).pack(side="left", padx=(8, 0))
+        # Language of the whole app: UI texts, transcription and AI summary.
+        dark_label(ctr, text=tr("Language:")).pack(side="left", padx=(10, 4))
+        self.lang_combo = ttk.Combobox(ctr, state="readonly", width=9,
+                                       values=list(LANG_CODES))
+        self.lang_combo.set(LANG_NAMES[current_language()])
+        self.lang_combo.pack(side="left", padx=4)
+        self.lang_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
+        dark_check(ctr, text=tr("You / Them"), variable=self.speakers_var).pack(side="left", padx=(12, 0))
+        dark_check(ctr, text=tr("Timestamps"), variable=self.timestamps_var).pack(side="left", padx=(8, 0))
+        dark_check(ctr, text=tr("Transcribe on stop"), variable=self.auto_transcribe_var).pack(side="left", padx=(8, 0))
 
-        ctr2 = tk.Frame(tr, bg=P.PANEL)
+        ctr2 = tk.Frame(sec_tr, bg=P.PANEL)
         ctr2.pack(fill="x", pady=(4, 2))
         self.btn_transcribe = TechButton(
-            ctr2, kind="primary", text="▶  TRANSCRIBE LAST",
+            ctr2, kind="primary", text=tr("▶  TRANSCRIBE LAST"),
             command=self._transcribe, state="disabled")
         self.btn_transcribe.pack(side="left", padx=2)
-        TechButton(ctr2, text="FILE...", command=self._transcribe_file).pack(side="left", padx=6)
-        TechButton(ctr2, text="SAVE .TXT", command=self._save_transcript).pack(side="left", padx=6)
-        # AI summary button, top-right of the transcript box. Only shown when
-        # the feature is enabled in Settings (toggled from _apply_settings).
-        self.btn_summary = TechButton(ctr2, kind="primary", text="✦ AI SUMMARY → NOTION",
-                                      command=self._summarize_to_notion)
-        if self.notion_enabled_var.get():
-            self.btn_summary.pack(side="right", padx=2)
+        TechButton(ctr2, text=tr("FILE..."), command=self._transcribe_file).pack(side="left", padx=6)
+        TechButton(ctr2, text=tr("LOAD .TXT"), command=self._load_transcript).pack(side="left", padx=6)
+        TechButton(ctr2, text=tr("SAVE .TXT"), command=self._save_transcript).pack(side="left", padx=6)
+        # AI summary button, top-right of the transcript box. Shows the summary
+        # in a window to copy; also publishes to Notion if enabled in Settings.
+        self.btn_summary = TechButton(ctr2, kind="spicy", text=tr("✦ AI SUMMARY"),
+                                      command=self._summarize)
+        self.btn_summary.pack(side="right", padx=2)
         self.lbl_tr_status = dark_label(ctr2, dim=True, text="")
         self.lbl_tr_status.pack(side="left", padx=10)
 
-        self.progress = TechProgress(tr)
+        self.progress = TechProgress(sec_tr)
         self.progress.pack(fill="x", pady=(6, 4))
 
-        txt_frame = tk.Frame(tr, bg=P.PANEL)
+        txt_frame = tk.Frame(sec_tr, bg=P.PANEL)
         txt_frame.pack(fill="both", expand=True)
         self.txt_transcript = tk.Text(
             txt_frame, height=10, wrap="word", bg=P.FIELD, fg=P.TEXT,
@@ -335,7 +355,7 @@ class App(tk.Tk):
             if devices:
                 self.mic_combo.current(0)
         except Exception as e:
-            messagebox.showerror("Error", f"Could not list devices:\n{e}")
+            messagebox.showerror(tr("Error"), tr("Could not list devices:\n{}").format(e))
 
     # ---------------- Recording ----------------
 
@@ -344,8 +364,8 @@ class App(tk.Tk):
             return
         if pyaudio is None:
             messagebox.showerror(
-                "Missing dependency",
-                "Install PyAudioWPatch (Windows only):\npip install PyAudioWPatch")
+                tr("Missing dependency"),
+                tr("Install PyAudioWPatch (Windows only):\npip install PyAudioWPatch"))
             return
         mic_sel = self.mic_combo.get()
         mic_index = int(mic_sel.split(":")[0]) if mic_sel and ":" in mic_sel else None
@@ -353,9 +373,11 @@ class App(tk.Tk):
             self.recorder = DualRecorder(mic_device_index=mic_index)
             self.recorder.start()
         except Exception as e:
-            messagebox.showerror("Error starting recording", str(e))
+            log.exception("Could not start recording (mic=%r)", mic_sel)
+            messagebox.showerror(tr("Error starting recording"), str(e))
             return
 
+        log.info("Recording started (mic=%r)", mic_sel)
         self.recording = True
         # The .txt name depends on the current meeting: we read the Teams
         # window titles NOW (by stop time the window might already be closed).
@@ -364,7 +386,7 @@ class App(tk.Tk):
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
         self.btn_transcribe.config(state="disabled")
-        self._set_status("Recording system + microphone", "recording")
+        self._set_status(tr("Recording system + microphone"), "recording")
         self.deiconify()
         self._tick_timer()
         self._blink_rec()
@@ -382,7 +404,7 @@ class App(tk.Tk):
             return
         errors = self.recorder.get_errors()
         if errors:
-            messagebox.showerror("Error during recording", "\n".join(errors))
+            messagebox.showerror(tr("Error during recording"), "\n".join(errors))
             self._stop_recording()
             return
         secs = int(self.recorder.elapsed_seconds())
@@ -401,7 +423,7 @@ class App(tk.Tk):
         self.recording = False
         self.visualizer.recording = False
         self.btn_stop.config(state="disabled")
-        self._set_status("Processing and aligning tracks...", "busy")
+        self._set_status(tr("Processing and aligning tracks..."), "busy")
         record_dir = self.record_dir.get().strip() or RECORD_DIR_DEFAULT
         transcript_dir = self.transcript_dir.get().strip() or record_dir
         prefix = getattr(self, "_meeting_prefix", DEFAULT_TRANSCRIPT_PREFIX)
@@ -435,8 +457,13 @@ class App(tk.Tk):
             save_wav_mono(paths["sys"], sys_only, rate)
             save_wav_mono(paths["mic"], mic_only, rate)
 
+            log.info("Recording saved: %s (%.1f min, prefix=%s)",
+                     paths["mixed"], len(mixed) / rate / 60, prefix)
+            if errors:
+                log.warning("Recording finished with warnings: %s", "; ".join(errors))
             self.after(0, lambda: self._on_stop_done(paths, errors))
         except Exception as e:
+            log.exception("Error processing/saving the recording")
             try:
                 recorder.close()
             except Exception:
@@ -462,9 +489,9 @@ class App(tk.Tk):
         self.btn_start.config(state="normal")
         self.btn_transcribe.config(state="normal")
         self.last_paths = paths
-        self._set_status(f"Saved: {os.path.basename(paths['mixed'])}", "ready")
+        self._set_status(tr("Saved: {}").format(os.path.basename(paths["mixed"])), "ready")
         if errors:
-            messagebox.showwarning("Warnings during recording", "\n".join(errors))
+            messagebox.showwarning(tr("Warnings during recording"), "\n".join(errors))
         if self._quit_after_save:
             self._quit_after_save = False
             self._quit_app()
@@ -475,12 +502,13 @@ class App(tk.Tk):
     def _on_stop_error(self, error):
         self.btn_start.config(state="normal")
         self.btn_stop.config(state="disabled")
-        self._set_status("Error processing the recording", "idle")
-        messagebox.showerror("Error stopping the recording", str(error))
+        self._set_status(tr("Error processing the recording"), "idle")
+        messagebox.showerror(tr("Error stopping the recording"), str(error))
         if self._quit_after_save:
             # Saving failed; we ask whether to close anyway.
             self._quit_after_save = False
-            if messagebox.askyesno("Close", "The recording could not be saved.\nClose anyway?"):
+            if messagebox.askyesno(tr("Close"),
+                                   tr("The recording could not be saved.\nClose anyway?")):
                 self._quit_app()
 
     # ---------------- Meeting detection ----------------
@@ -493,7 +521,7 @@ class App(tk.Tk):
                 # visible in the settings window) instead of interrupting
                 # startup with a dialog.
                 self.auto_detect_var.set(False)
-                self._set_status("Detection unavailable (missing dependencies)", "idle")
+                self._set_status(tr("Detection unavailable (missing dependencies)"), "idle")
                 return
             keywords = [k for k in self.keywords_var.get().split(",")]
             self.meeting_watcher = MeetingWatcher(
@@ -503,12 +531,12 @@ class App(tk.Tk):
                 poll_interval=self.poll_interval_var.get(),
             )
             self.meeting_watcher.start()
-            self._set_status("Watching Teams...", "watching")
+            self._set_status(tr("Watching Teams..."), "watching")
         else:
             if self.meeting_watcher:
                 self.meeting_watcher.stop()
                 self.meeting_watcher = None
-            self._set_status("Detection off", "ready")
+            self._set_status(tr("Detection off"), "ready")
 
     def _on_meeting_detected(self):
         # Called from the watcher thread: we must hop to the Tkinter thread.
@@ -517,6 +545,7 @@ class App(tk.Tk):
     def _show_meeting_popup(self):
         if self.recording:
             return  # already recording, don't disturb
+        log.info("Teams meeting detected, showing popup")
         MeetingPopup(self, on_accept=self._start_recording)
 
     def _test_popup(self):
@@ -549,6 +578,7 @@ class App(tk.Tk):
             "keywords": self.keywords_var.get(),
             "poll_interval": poll,
             "theme": self.theme_name,
+            "language": current_language(),
             "notion_enabled": self.notion_enabled_var.get(),
             "nvidia_api_key": self.nvidia_key_var.get().strip(),
             "notion_api_key": self.notion_key_var.get().strip(),
@@ -557,13 +587,6 @@ class App(tk.Tk):
         if self.meeting_watcher:
             self.meeting_watcher.update_keywords(self.keywords_var.get().split(","))
             self.meeting_watcher.poll_interval = poll
-        # The AI summary button follows the feature toggle.
-        if hasattr(self, "btn_summary"):
-            if self.notion_enabled_var.get():
-                if not self.btn_summary.winfo_ismapped():
-                    self.btn_summary.pack(side="right", padx=2)
-            else:
-                self.btn_summary.pack_forget()
 
     # ---------------- Theme ----------------
 
@@ -572,19 +595,41 @@ class App(tk.Tk):
         the current state (transcript text, mic list, recording status)."""
         if name == self.theme_name:
             return
+        log.info("Theme switched to %s", name)
         set_theme(name)
         self.theme_name = P.NAME
+        self._rebuild_ui()
 
+    def _on_language_selected(self, event=None):
+        code = LANG_CODES.get(self.lang_combo.get(), DEFAULT_LANGUAGE)
+        if code == current_language():
+            return
+        log.info("Language switched to %s", code)
+        set_language(code)
+        self.title(tr("Max Recorder — Teams meeting transcription"))
+        self._rebuild_ui()
+        # The tray menu texts are fixed at creation; recreate it.
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
+            self.tray_icon = None
+            self._setup_tray()
+
+    def _rebuild_ui(self):
+        """Rebuilds every widget in place (used by the theme and language
+        switches), preserving the current state (transcript text, mic list,
+        recording status)."""
         # Preserve state that lives in widgets.
-        transcript = self.txt_transcript.get("1.0", "end-1c")
+        transcript_dump = self.txt_transcript.dump("1.0", "end-1c", text=True, tag=True)
         mic_values = list(self.mic_combo["values"])
         mic_index = self.mic_combo.current()
         model = self.whisper_model_combo.get()
-        lang = self.lang_entry.get()
         tr_status = self.lbl_tr_status.cget("text")
 
-        # Tear down and rebuild every widget with the new palette. Toplevels
-        # (settings window, popups) are managed by their own code.
+        # Tear down and rebuild every widget with the new palette/texts.
+        # Toplevels (settings window, popups) are managed by their own code.
         for child in list(self.winfo_children()):
             if isinstance(child, tk.Toplevel):
                 continue
@@ -598,40 +643,49 @@ class App(tk.Tk):
         if 0 <= mic_index < len(mic_values):
             self.mic_combo.current(mic_index)
         self.whisper_model_combo.set(model)
-        self.lang_entry.delete(0, tk.END)
-        self.lang_entry.insert(0, lang)
         self.lbl_tr_status.config(text=tr_status)
-        if transcript:
-            self.txt_transcript.insert("1.0", transcript)
+        self._restore_transcript_dump(transcript_dump)
         if self.recording:
             self.visualizer.recording = True
             self.btn_start.config(state="disabled")
             self.btn_stop.config(state="normal")
-            self._set_status("Recording system + microphone", "recording")
+            self._set_status(tr("Recording system + microphone"), "recording")
         else:
             if self.last_paths:
                 self.btn_transcribe.config(state="normal")
             if self.meeting_watcher and self.meeting_watcher.is_alive():
-                self._set_status("Watching Teams...", "watching")
+                self._set_status(tr("Watching Teams..."), "watching")
 
         self._apply_settings()
+
+    def _restore_transcript_dump(self, dump):
+        """Re-inserts the transcript panel content preserving the color tags
+        (Text.dump interleaves 'tagon'/'tagoff'/'text' entries)."""
+        active = []
+        for kind, value, _index in dump:
+            if kind == "tagon":
+                active.append(value)
+            elif kind == "tagoff" and value in active:
+                active.remove(value)
+            elif kind == "text":
+                self.txt_transcript.insert(tk.END, value, tuple(active))
 
     # ---------------- Autostart ----------------
 
     def _toggle_autostart(self):
         if not WINREG_AVAILABLE:
-            messagebox.showerror("Not available", "Autostart is only available on Windows.")
+            messagebox.showerror(tr("Not available"), tr("Autostart is only available on Windows."))
             self.autostart_var.set(False)
             return
         try:
             if self.autostart_var.get():
                 enable_autostart()
-                self._set_status("Autostart enabled", "ready")
+                self._set_status(tr("Autostart enabled"), "ready")
             else:
                 disable_autostart()
-                self._set_status("Autostart disabled", "ready")
+                self._set_status(tr("Autostart disabled"), "ready")
         except Exception as e:
-            messagebox.showerror("Error", f"Could not change autostart:\n{e}")
+            messagebox.showerror(tr("Error"), tr("Could not change autostart:\n{}").format(e))
             self.autostart_var.set(is_autostart_enabled())
 
     # ---------------- System tray ----------------
@@ -639,10 +693,10 @@ class App(tk.Tk):
     def _setup_tray(self):
         image = self._make_tray_image()
         menu = pystray.Menu(
-            pystray.MenuItem("Open", self._tray_open, default=True),
-            pystray.MenuItem("Start recording", lambda: self.after(0, self._start_recording)),
-            pystray.MenuItem("Stop recording", lambda: self.after(0, self._stop_recording)),
-            pystray.MenuItem("Quit", self._tray_quit),
+            pystray.MenuItem(tr("Open"), self._tray_open, default=True),
+            pystray.MenuItem(tr("Start recording"), lambda: self.after(0, self._start_recording)),
+            pystray.MenuItem(tr("Stop recording"), lambda: self.after(0, self._stop_recording)),
+            pystray.MenuItem(tr("Quit"), self._tray_quit),
         )
         self.tray_icon = pystray.Icon("max_recorder", image, "Max Recorder", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
@@ -666,16 +720,16 @@ class App(tk.Tk):
 
     def _minimize_to_tray(self):
         if not TRAY_AVAILABLE:
-            messagebox.showerror("Missing dependency", "Install: pip install pystray pillow")
+            messagebox.showerror(tr("Missing dependency"), tr("Install: pip install pystray pillow"))
             return
         self.withdraw()
 
     def _on_close(self):
         if TRAY_AVAILABLE:
             if messagebox.askyesno(
-                    "Minimize",
-                    "Minimize to the system tray and keep watching for meetings?\n"
-                    "(No = close the application completely)"):
+                    tr("Minimize"),
+                    tr("Minimize to the system tray and keep watching for meetings?\n"
+                       "(No = close the application completely)")):
                 self.withdraw()
                 return
         self._quit_app()
@@ -684,11 +738,11 @@ class App(tk.Tk):
         # Warn if a recording is in progress: avoids losing it on close.
         if self.recording:
             resp = messagebox.askyesnocancel(
-                "Recording in progress",
-                "A recording is in progress.\n\n"
-                "- Yes: stop and save it before quitting.\n"
-                "- No: discard it and quit (it is lost).\n"
-                "- Cancel: don't close.",
+                tr("Recording in progress"),
+                tr("A recording is in progress.\n\n"
+                   "- Yes: stop and save it before quitting.\n"
+                   "- No: discard it and quit (it is lost).\n"
+                   "- Cancel: don't close."),
                 icon="warning")
             if resp is None:
                 return  # Cancel: don't close
@@ -696,7 +750,7 @@ class App(tk.Tk):
                 # Save and quit: we stop (saves in the background) and close
                 # when it finishes, from _on_stop_done / _on_stop_error.
                 self._quit_after_save = True
-                self._set_status("Saving before quitting...", "busy")
+                self._set_status(tr("Saving before quitting..."), "busy")
                 self._stop_recording()
                 return
             # No: discard the in-progress recording without saving.
@@ -719,6 +773,7 @@ class App(tk.Tk):
         # Delete the temporary mic/system tracks (they are not kept on disk).
         if self._temp_dir:
             shutil.rmtree(self._temp_dir, ignore_errors=True)
+        log.info("App closing")
         self.destroy()
 
     # ---------------- Transcription ----------------
@@ -730,20 +785,20 @@ class App(tk.Tk):
         if not self._check_whisper():
             return
         if not self.last_paths or not os.path.exists(self.last_paths["mixed"]):
-            messagebox.showwarning("Notice", "Record and stop a recording first.")
+            messagebox.showwarning(tr("Notice"), tr("Record and stop a recording first."))
             return
 
         jobs = None
         if self.speakers_var.get():
             sys_p, mic_p = self.last_paths.get("sys"), self.last_paths.get("mic")
             if sys_p and mic_p and os.path.exists(sys_p) and os.path.exists(mic_p):
-                label_me, label_them = speaker_labels(self.lang_entry.get())
+                label_me, label_them = speaker_labels(current_language())
                 jobs = [(label_them, sys_p), (label_me, mic_p)]
             else:
                 # Surfaces the reason instead of silently dropping the labels
                 # (the separate tracks live in a temp folder per session).
                 self.lbl_tr_status.config(
-                    text="Speaker tracks unavailable; transcribing the mix")
+                    text=tr("Speaker tracks unavailable; transcribing the mix"))
         if jobs is None:
             jobs = [(None, self.last_paths["mixed"])]
 
@@ -763,20 +818,26 @@ class App(tk.Tk):
             return
         path = filedialog.askopenfilename(
             initialdir=self.record_dir.get(),
-            filetypes=[("Audio", "*.wav *.mp3 *.m4a *.flac *.ogg *.opus"), ("All", "*.*")])
+            filetypes=[(tr("Audio"), "*.wav *.mp3 *.m4a *.flac *.ogg *.opus"),
+                       (tr("All"), "*.*")])
         if not path:
             return
+        # A standalone file is a single mixed track, so the "You / Them"
+        # labels cannot apply here; say so instead of silently omitting them.
+        if self.speakers_var.get():
+            self.lbl_tr_status.config(text=tr(
+                "Speaker labels are only available for the last recording of this session"))
         base = os.path.splitext(path)[0]
         self._run_transcription([(None, path)], autosave_path=base + "_transcription.txt")
 
     def _check_whisper(self):
         if not WHISPER_AVAILABLE:
             messagebox.showerror(
-                "Missing dependency",
-                "Install faster-whisper:\npip install faster-whisper")
+                tr("Missing dependency"),
+                tr("Install faster-whisper:\npip install faster-whisper"))
             return False
         if self.transcribing:
-            messagebox.showinfo("Transcription", "A transcription is already in progress.")
+            messagebox.showinfo(tr("Transcription"), tr("A transcription is already in progress."))
             return False
         return True
 
@@ -785,15 +846,17 @@ class App(tk.Tk):
         self.btn_transcribe.config(state="disabled")
         self.txt_transcript.delete("1.0", tk.END)
         self.progress.set(None)  # indeterminate while the model loads
-        self._set_status("Transcribing...", "busy")
+        self._set_status(tr("Transcribing..."), "busy")
         model_size = self.whisper_model_combo.get()
-        lang = self.lang_entry.get().strip() or None
+        lang = current_language()
         threading.Thread(
             target=self._transcribe_worker,
             args=(jobs, model_size, lang, autosave_path), daemon=True).start()
 
     def _transcribe_worker(self, jobs, model_size, lang, autosave_path):
         try:
+            log.info("Transcription started (model=%s, lang=%s, tracks=%s)",
+                     model_size, lang, [l or "mix" for l, _ in jobs])
             segs = self.transcriber.transcribe_jobs(
                 jobs, model_size, language=lang,
                 on_segment=lambda s, l, t: self.after(0, self._append_segment, s, l, t),
@@ -813,12 +876,14 @@ class App(tk.Tk):
                         f.write(text)
                     saved = autosave_path
                 except OSError:
-                    pass
+                    log.exception("Could not autosave the transcript to %s", autosave_path)
 
+            log.info("Transcription finished (%d segments, saved=%s)", len(segs), saved)
             self.after(0, lambda: self._on_transcribe_done(segs, multi, saved))
         except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Transcription error", str(e)))
-            self.after(0, lambda: self._set_status("Error transcribing", "idle"))
+            log.exception("Transcription failed")
+            self.after(0, lambda: messagebox.showerror(tr("Transcription error"), str(e)))
+            self.after(0, lambda: self._set_status(tr("Error transcribing"), "idle"))
             self.after(0, self.progress.hide)
         finally:
             self.transcribing = False
@@ -835,52 +900,105 @@ class App(tk.Tk):
         self.txt_transcript.insert(tk.END, text + "\n")
         self.txt_transcript.see(tk.END)
 
-    def _publish_summary(self, transcript_text):
-        """Summarizes with Mistral (NVIDIA API) and creates the page in the
-        Notion calendar. Runs in a worker thread. Returns a short note for
-        the status line (success or error)."""
-        nvidia_key = self.nvidia_key_var.get().strip()
-        notion_key = self.notion_key_var.get().strip()
-        db_id = extract_notion_database_id(self.notion_db_var.get())
-        if not (nvidia_key and notion_key and db_id):
-            return "Notion: missing credentials (see Settings)"
-        try:
-            self.after(0, lambda: self.lbl_tr_status.config(text="Summarizing with AI..."))
-            summary = summarize(transcript_text, nvidia_key)
-            self.after(0, lambda: self.lbl_tr_status.config(text="Publishing to Notion..."))
-            title = getattr(self, "_meeting_prefix", DEFAULT_TRANSCRIPT_PREFIX).capitalize()
-            publish_to_notion(notion_key, db_id, title, date.today(), summary)
-            return "Published to Notion"
-        except Exception as e:
-            return f"Notion failed: {e}"
-
-    def _summarize_to_notion(self):
+    def _summarize(self):
         """AI SUMMARY button: summarizes the transcript currently shown in the
-        panel and publishes it to the Notion calendar."""
+        panel with Mistral (NVIDIA API) and shows the Markdown in a window to
+        copy. If the Notion integration is enabled in Settings, it also creates
+        a page in the calendar."""
         text = self.txt_transcript.get("1.0", "end-1c").strip()
         if not text:
-            messagebox.showwarning("Notice", "There is no transcript to summarize.")
+            messagebox.showwarning(tr("Notice"), tr("There is no transcript to summarize."))
+            return
+        nvidia_key = self.nvidia_key_var.get().strip()
+        if not nvidia_key:
+            messagebox.showwarning(
+                tr("Notice"), tr("Set your Mistral API key in Settings > AI summary first."))
             return
         if getattr(self, "_summarizing", False):
             return
         self._summarizing = True
         self.btn_summary.config(state="disabled")
-        self._set_status("Summarizing...", "busy")
+        self._set_status(tr("Summarizing..."), "busy")
 
         def worker():
-            note = self._publish_summary(text)
+            summary = None
+            note = ""
+            try:
+                log.info("AI summary started (%d chars)", len(text))
+                self.after(0, lambda: self.lbl_tr_status.config(
+                    text=tr("Summarizing with AI...")))
+                summary = summarize(text, nvidia_key, language=current_language())
+                note = tr("Summary ready")
+                if self.notion_enabled_var.get():
+                    notion_key = self.notion_key_var.get().strip()
+                    db_id = extract_notion_database_id(self.notion_db_var.get())
+                    if not (notion_key and db_id):
+                        note = tr("Summary ready · Notion skipped (missing credentials)")
+                    else:
+                        self.after(0, lambda: self.lbl_tr_status.config(
+                            text=tr("Publishing to Notion...")))
+                        title = getattr(self, "_meeting_prefix",
+                                        DEFAULT_TRANSCRIPT_PREFIX).capitalize()
+                        url = publish_to_notion(notion_key, db_id, title,
+                                                date.today(), summary)
+                        log.info("Summary published to Notion: %s", url)
+                        note = tr("Summary ready · published to Notion")
+            except Exception as e:
+                log.exception("AI summary failed")
+                if summary is None:
+                    note = tr("Summary failed: {}").format(e)
+                else:
+                    note = tr("Summary ready · Notion failed: {}").format(e)
 
             def done():
                 self._summarizing = False
                 self.btn_summary.config(state="normal")
                 self.lbl_tr_status.config(text=note)
-                ok = note == "Published to Notion"
-                self._set_status("Summary published to Notion" if ok
-                                 else "Notion publish failed",
+                ok = summary is not None
+                self._set_status(tr("Summary ready") if ok else tr("Summary failed"),
                                  "ready" if ok else "idle")
+                if ok:
+                    self._show_summary_window(summary, note)
             self.after(0, done)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _show_summary_window(self, summary_md, note=""):
+        """Window with the Markdown summary and a COPY button."""
+        win = tk.Toplevel(self)
+        win.title(tr("AI Summary — Max Recorder"))
+        win.configure(bg=P.BG)
+        win.transient(self)
+        win.geometry(f"720x520+{self.winfo_rootx() + 60}+{self.winfo_rooty() + 60}")
+
+        bar = tk.Frame(win, bg=P.BG)
+        bar.pack(fill="x", padx=12, pady=(10, 4))
+        tk.Label(bar, text=tr("AI SUMMARY"), bg=P.BG, fg=P.ACCENT,
+                 font=("Consolas", 12, "bold")).pack(side="left")
+        lbl_copied = dark_label(bar, dim=True, text=note)
+        lbl_copied.pack(side="right", padx=8)
+
+        body = tk.Frame(win, bg=P.PANEL)
+        body.pack(fill="both", expand=True, padx=12, pady=4)
+        txt = tk.Text(body, bg=P.FIELD, fg=P.TEXT, insertbackground=P.ACCENT,
+                      relief="flat", wrap="word", font=P.FONT_SM, padx=10, pady=8,
+                      highlightthickness=1, highlightbackground=P.BORDER)
+        sb = ttk.Scrollbar(body, orient="vertical", command=txt.yview)
+        txt.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        txt.pack(side="left", fill="both", expand=True)
+        txt.insert("1.0", summary_md)
+        txt.config(state="disabled")
+
+        def copy():
+            win.clipboard_clear()
+            win.clipboard_append(summary_md)
+            lbl_copied.config(text=tr("Copied to clipboard"))
+
+        btns = tk.Frame(win, bg=P.BG)
+        btns.pack(fill="x", padx=12, pady=10)
+        TechButton(btns, kind="primary", text=tr("COPY MARKDOWN"), command=copy).pack(side="left")
+        TechButton(btns, text=tr("CLOSE"), command=win.destroy).pack(side="right")
 
     def _on_transcribe_done(self, segs, multi, saved_path, note=None):
         # With several tracks the segments arrived interleaved per track;
@@ -890,14 +1008,46 @@ class App(tk.Tk):
             for start, label, text in segs:
                 self._append_segment(start, label, text)
         self.progress.set(1.0)
-        n = len(segs)
-        msg = f"{n} segments"
+        msg = tr("{} segments").format(len(segs))
         if saved_path:
-            msg += f" · saved {os.path.basename(saved_path)}"
+            msg += " · " + tr("saved {}").format(os.path.basename(saved_path))
         if note:
             msg += f" · {note}"
         self.lbl_tr_status.config(text=msg)
-        self._set_status("Transcription complete", "ready")
+        self._set_status(tr("Transcription complete"), "ready")
+
+    def _load_transcript(self):
+        """LOAD .TXT button: loads a saved transcript into the panel,
+        re-applying the timestamp/speaker colors, so it can be reviewed or
+        summarized with AI later."""
+        path = filedialog.askopenfilename(
+            initialdir=self.transcript_dir.get() or self.record_dir.get(),
+            filetypes=[(tr("Text"), "*.txt"), (tr("All files"), "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError as e:
+            log.exception("Could not load transcript from %s", path)
+            messagebox.showerror(tr("Load error"), tr("Could not read the file:\n{}").format(e))
+            return
+        line_re = re.compile(r"^(\[\d{1,2}:\d{2}(?::\d{2})?\]\s*)?"
+                             r"(?:(You|Yo|Them|Ellos):\s*)?(.*)$")
+        self.txt_transcript.delete("1.0", tk.END)
+        for line in content.splitlines():
+            m = line_re.match(line)
+            ts, label, rest = m.group(1), m.group(2), m.group(3)
+            if ts:
+                self.txt_transcript.insert(tk.END, ts, "ts")
+            if label:
+                tag = "me" if label in LABELS_ME else "them"
+                self.txt_transcript.insert(tk.END, f"{label}: ", tag)
+            self.txt_transcript.insert(tk.END, rest + "\n")
+        self.transcript_text = content
+        self.lbl_tr_status.config(text=f"Loaded {os.path.basename(path)}")
+        self._set_status("Transcript loaded", "ready")
+        log.info("Transcript loaded from %s (%d chars)", path, len(content))
 
     def _save_transcript(self):
         text = self.txt_transcript.get("1.0", tk.END).strip()
