@@ -14,7 +14,7 @@ Microsoft Teams meeting recorder for **Windows**, with local transcription.
      Spanish).
    - Timestamps per line and streaming text with a progress bar.
    - Optional automatic transcription when the recording stops.
-   - "File..." button to transcribe any standalone audio file (wav, mp3, m4a...).
+   - "Load .mp3" button to transcribe any standalone audio file (wav, mp3, m4a...).
 3. **Detects meetings** in Teams (always on): when you join a call, it shows a
    notification with Record / Dismiss buttons. With the "Background" button the
    app hides in the system tray and keeps watching.

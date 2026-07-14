@@ -62,7 +62,7 @@ class SettingsWindow(tk.Toplevel):
         self.geometry(f"+{app.winfo_rootx() + 90}+{app.winfo_rooty() + 40}")
         self.protocol("WM_DELETE_WINDOW", self._save_close)
 
-        tk.Label(self, text=tr("SETTINGS"), bg=P.BG, fg=P.ACCENT,
+        tk.Label(self, text=tr("SETTINGS"), bg=P.BG, fg=P.TITLE_FG,
                  font=("Consolas", 12, "bold"), anchor="w").pack(
             fill="x", padx=12, pady=(10, 0))
 

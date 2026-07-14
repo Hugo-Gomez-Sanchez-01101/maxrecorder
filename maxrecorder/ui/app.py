@@ -216,7 +216,7 @@ class App(tk.Tk):
         # ---- Header ----
         header = tk.Frame(self, bg=P.BG)
         header.pack(fill="x", padx=10, pady=(10, 0))
-        tk.Label(header, text="◉ MAX RECORDER", bg=P.BG, fg=P.ACCENT,
+        tk.Label(header, text="◉ MAX RECORDER", bg=P.BG, fg=P.TITLE_FG,
                  font=P.TITLE, anchor="w").pack(side="left")
         # Top-right corner buttons: go to background and open the settings window.
         TechButton(header, text=tr("▾ BACKGROUND"),
@@ -296,9 +296,12 @@ class App(tk.Tk):
             ctr2, kind="primary", text=tr("▶  TRANSCRIBE LAST"),
             command=self._transcribe, state="disabled")
         self.btn_transcribe.pack(side="left", padx=2)
-        TechButton(ctr2, text=tr("FILE..."), command=self._transcribe_file).pack(side="left", padx=6)
-        TechButton(ctr2, text=tr("LOAD .TXT"), command=self._load_transcript).pack(side="left", padx=6)
-        TechButton(ctr2, text=tr("SAVE .TXT"), command=self._save_transcript).pack(side="left", padx=6)
+        TechButton(ctr2, kind="file", text=tr("LOAD .MP3"),
+                   command=self._transcribe_file).pack(side="left", padx=6)
+        TechButton(ctr2, kind="file", text=tr("LOAD .TXT"),
+                   command=self._load_transcript).pack(side="left", padx=6)
+        TechButton(ctr2, kind="file", text=tr("SAVE .TXT"),
+                   command=self._save_transcript).pack(side="left", padx=6)
         # AI summary button, top-right of the transcript box. Shows the summary
         # in a window to copy; also publishes to Notion if enabled in Settings.
         self.btn_summary = TechButton(ctr2, kind="spicy", text=tr("✦ AI SUMMARY"),
@@ -973,7 +976,7 @@ class App(tk.Tk):
 
         bar = tk.Frame(win, bg=P.BG)
         bar.pack(fill="x", padx=12, pady=(10, 4))
-        tk.Label(bar, text=tr("AI SUMMARY"), bg=P.BG, fg=P.ACCENT,
+        tk.Label(bar, text=tr("AI SUMMARY"), bg=P.BG, fg=P.TITLE_FG,
                  font=("Consolas", 12, "bold")).pack(side="left")
         lbl_copied = dark_label(bar, dim=True, text=note)
         lbl_copied.pack(side="right", padx=8)

@@ -45,7 +45,7 @@ _ES = {
     "Timestamps": "Marcas de tiempo",
     "Transcribe on stop": "Transcribir al parar",
     "▶  TRANSCRIBE LAST": "▶  TRANSCRIBIR ÚLTIMA",
-    "FILE...": "ARCHIVO...",
+    "LOAD .MP3": "CARGAR .MP3",
     "LOAD .TXT": "CARGAR .TXT",
     "SAVE .TXT": "GUARDAR .TXT",
     "✦ AI SUMMARY": "✦ RESUMEN IA",

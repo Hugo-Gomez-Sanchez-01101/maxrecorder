@@ -27,6 +27,8 @@ THEMES = {
         DIM="#5d7183",         # secondary text
         ACCENT="#00e5ff",      # neon cyan (identity)
         ACCENT_DK="#073a44",   # dim cyan (selections)
+        TITLE_FG="#00e5ff",    # window titles (MAX RECORDER / SETTINGS)
+        SECTION_FG="#00e5ff",  # section headers (RECORDING, TRANSCRIPTION...)
         GREEN="#2be8a6",       # ok / ready
         RED="#ff3860",         # recording / danger
         RED_DK="#4a1220",
@@ -38,6 +40,8 @@ THEMES = {
         BTN_DANGER=("#4a1220", "#ff8ba3", "#6b1a2e"),
         BTN_GHOST=("#121a24", "#d6e3ee", "#1a2634"),
         BTN_SPICY=("#ffcd11", "#141414", "#e6b400"),  # CAT excavator yellow
+        BTN_FILE=("#121a24", "#d6e3ee", "#1a2634"),   # file buttons (= ghost here)
+        VIS_COLORS=None,       # visualizer uses the default level-based colors
     ),
     "te": dict(
         BG="#e6e6e2",          # warm light gray (TE plastic)
@@ -50,6 +54,8 @@ THEMES = {
         DIM="#8b8b86",
         ACCENT="#ff4b00",      # TE orange
         ACCENT_DK="#ffd2bd",   # pale orange (selections)
+        TITLE_FG="#ff4b00",
+        SECTION_FG="#ff4b00",
         GREEN="#00a353",
         RED="#d71921",
         RED_DK="#f3c1b5",
@@ -60,20 +66,24 @@ THEMES = {
         BTN_DANGER=("#141414", "#ff6a3d", "#2e2e2c"),
         BTN_GHOST=("#d2d2ce", "#141414", "#c4c4c0"),
         BTN_SPICY=("#d71921", "#ffffff", "#b21419"),  # TE red
+        BTN_FILE=("#d2d2ce", "#141414", "#c4c4c0"),   # = ghost here
+        VIS_COLORS=None,
     ),
     # Polaroid: white frame, black ink and the classic color-spectrum stripe
     # (#FF0000 #FF8000 #FFD500 #7CDE00 #0099FF).
     "polaroid": dict(
-        BG="#ffffff",
-        PANEL="#f6f6f6",
-        PANEL2="#ededed",
+        BG="#ffd500",          # spectrum-yellow window frame
+        PANEL="#ffffff",       # white boxes on the yellow frame
+        PANEL2="#f2f2f2",
         FIELD="#ffffff",
-        BORDER="#d9d9d9",
+        BORDER="#141414",      # black frame lines around the boxes
         GRID="#ececec",
         TEXT="#000000",
         DIM="#7a7a7a",
         ACCENT="#0099ff",      # spectrum blue (identity)
         ACCENT_DK="#cce9ff",   # pale blue (selections)
+        TITLE_FG="#000000",    # every title in black
+        SECTION_FG="#000000",
         GREEN="#7cde00",
         RED="#ff0000",
         RED_DK="#ffd6d6",
@@ -82,8 +92,11 @@ THEMES = {
         DISABLED_FG="#b5b5b5",
         BTN_PRIMARY=("#0099ff", "#ffffff", "#007fd4"),
         BTN_DANGER=("#ff0000", "#ffffff", "#d40000"),
-        BTN_GHOST=("#ededed", "#000000", "#dedede"),
+        BTN_GHOST=("#f2f2f2", "#000000", "#e3e3e3"),
         BTN_SPICY=("#ffd500", "#000000", "#e6c000"),  # spectrum yellow
+        BTN_FILE=("#7cde00", "#ffffff", "#6cc400"),   # spectrum green file buttons
+        # Visualizer bars cycle the Polaroid spectrum stripe, in order.
+        VIS_COLORS=("#ff0000", "#ff8000", "#ffd500", "#7cde00", "#0099ff"),
     ),
 }
 
@@ -146,6 +159,7 @@ class TechButton(tk.Button):
             "danger": P.BTN_DANGER,
             "ghost": P.BTN_GHOST,
             "spicy": P.BTN_SPICY,
+            "file": P.BTN_FILE,
         }
         bg, fg, hover = kinds.get(kind, kinds["ghost"])
         self._bg, self._hover = bg, hover
@@ -249,19 +263,28 @@ class AudioVisualizer(tk.Canvas):
 
         x = w - len(self._history) * (self._bar_w + self._gap)
         max_h = self.h // 2 - 6
-        for s, m in self._history:
+        # Optional per-theme stripe (Polaroid): bars cycle these colors in
+        # order (each color spans 3 bars) instead of the level-based blend.
+        stripe = getattr(P, "VIS_COLORS", None)
+        for i, (s, m) in enumerate(self._history):
             if self.recording:
-                # system (accent to red by intensity) upward,
-                # microphone (green) downward
                 hs = max(int(s * max_h), 1)
                 hm = max(int(m * max_h), 1)
-                cs = blend(P.ACCENT, P.RED, s * s)
-                cm = blend(P.GREEN, P.AMBER, m * m)
+                if stripe:
+                    cs = cm = stripe[(i // 3) % len(stripe)]
+                else:
+                    # system (accent to red by intensity) upward,
+                    # microphone (green) downward
+                    cs = blend(P.ACCENT, P.RED, s * s)
+                    cm = blend(P.GREEN, P.AMBER, m * m)
                 self.create_rectangle(x, cy - hs, x + self._bar_w, cy, fill=cs, outline="")
                 self.create_rectangle(x, cy, x + self._bar_w, cy + hm, fill=cm, outline="")
             else:
                 hv = max(int(s * max_h), 1)
-                c = blend(P.GRID, P.ACCENT, 0.45)
+                if stripe:
+                    c = blend(P.PANEL, stripe[(i // 3) % len(stripe)], 0.55)
+                else:
+                    c = blend(P.GRID, P.ACCENT, 0.45)
                 self.create_rectangle(x, cy - hv, x + self._bar_w, cy + hv, fill=c, outline="")
             x += self._bar_w + self._gap
 
@@ -316,7 +339,7 @@ def make_section(parent, title):
     outer.pack(fill="x", padx=10, pady=(8, 0))
     header = tk.Frame(outer, bg=P.PANEL)
     header.pack(fill="x")
-    tk.Label(header, text="▸ " + title.upper(), bg=P.PANEL, fg=P.ACCENT,
+    tk.Label(header, text="▸ " + title.upper(), bg=P.PANEL, fg=P.SECTION_FG,
              font=("Consolas", 9, "bold"), anchor="w").pack(side="left", padx=10, pady=(6, 2))
     inner = tk.Frame(outer, bg=P.PANEL)
     inner.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -332,9 +355,9 @@ def make_collapsible_section(parent, title, expanded=False):
     header = tk.Frame(outer, bg=P.PANEL, cursor="hand2")
     header.pack(fill="x")
     arrow = tk.Label(header, text="▾" if expanded else "▸", bg=P.PANEL,
-                     fg=P.ACCENT, font=("Consolas", 9, "bold"), cursor="hand2")
+                     fg=P.SECTION_FG, font=("Consolas", 9, "bold"), cursor="hand2")
     arrow.pack(side="left", padx=(10, 0), pady=(6, 4))
-    lbl = tk.Label(header, text=" " + title.upper(), bg=P.PANEL, fg=P.ACCENT,
+    lbl = tk.Label(header, text=" " + title.upper(), bg=P.PANEL, fg=P.SECTION_FG,
                    font=("Consolas", 9, "bold"), anchor="w", cursor="hand2")
     lbl.pack(side="left", pady=(6, 4))
     inner = tk.Frame(outer, bg=P.PANEL)
